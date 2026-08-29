@@ -25,6 +25,7 @@ from bot.func_helper.msg_utils import callAnswer, editMessage, callListen, sendM
 from bot.modules.commands import p_start
 from bot.modules.commands.partition_code import _redeem_partition_code
 from bot.modules.commands.exchange import rgs_code
+from bot.modules.commands.xserver_code import xs_redeem_code
 from bot.sql_helper.sql_code import sql_count_c_code
 from bot.sql_helper.sql_emby import sql_get_emby, sql_update_emby, Emby
 from bot.sql_helper.sql_emby2 import sql_get_emby2, sql_delete_emby2
@@ -574,7 +575,8 @@ async def call_exchange(_, call):
     elif msg.text == '/cancel':
         await asyncio.gather(msg.delete(), p_start(_, msg))
     else:
-        await rgs_code(_, msg, register_code=msg.text)
+        if not await xs_redeem_code(msg, msg.text.strip()):
+            await rgs_code(_, msg, register_code=msg.text)
 
 
 @bot.on_callback_query(filters.regex('^partitioncode$') & user_in_group_on_filter)

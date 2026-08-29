@@ -87,6 +87,8 @@ class Schedall(BaseModel):
     restart_chat_id: int = 0
     restart_msg_id: int = 0
     backup_db: bool = True
+    # xserver（测试服）到期检测
+    xserver_check_ex: bool = True
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -137,6 +139,42 @@ class API(BaseModel):
 class RedEnvelope(BaseModel):
     status: bool = True  # 是否开启红包
     allow_private: bool = True # 是否允许专属红包
+
+class XserverChannels(BaseModel):
+    """xserver（扩展服务器/测试服）开号资格通道开关"""
+    # 通道A：主服持有有效账号即可免费一键开号
+    main_user: bool = True
+    # 通道B：仅白名单用户（lv='a'）免费开号
+    whitelist: bool = False
+    # 通道C：积分兑换开号（无主服账号也可参与）
+    points: bool = True
+    # 通道C 单价（花币）
+    points_cost: int = 100
+
+
+class Xserver(BaseModel):
+    """
+    xserver - 旁路扩展emby服务器（如测试服），与主服数据结构完全隔离。
+    账号记录在 xserver_account 表，名额在 xserver_quota 表。
+    """
+    id: str
+    name: str = "测试服"
+    enable: bool = True
+    url: str
+    api: str
+    line: str = ""
+    # 独立有效天数
+    expire_days: int = 15
+    # 初始名额（首次启动种子写入 xserver_quota.total，之后以表内值为准）
+    all_user: int = 50
+    # 创建账号时同时限制的同时连接数
+    limit: int = 2
+    # 测试服上需要隐藏的媒体库名称（独立于主服 emby_block）
+    block_libs: Optional[List[str]] = []
+    # 开号用户名前缀，用于与主服账号区分
+    name_prefix: str = "t_"
+    channels: XserverChannels = Field(default_factory=XserverChannels)
+
 
 class Config(BaseModel):
     bot_name: str
@@ -210,6 +248,8 @@ class Config(BaseModel):
     auto_update: AutoUpdate = Field(default_factory=AutoUpdate)
     red_envelope: RedEnvelope = Field(default_factory=RedEnvelope)
     api: API = Field(default_factory=API)
+    # 扩展emby服务器列表（测试服等），默认空，老配置零影响
+    xservers: Optional[List[Xserver]] = []
 
     def __init__(self, **data):
         super().__init__(**data)

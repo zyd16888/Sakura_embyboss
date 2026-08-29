@@ -10,6 +10,7 @@ from pyrogram import filters
 from bot.func_helper.emby import Embyservice
 from bot.func_helper.utils import judge_admins, members_info, open_check
 from bot.modules.commands.exchange import rgs_code
+from bot.modules.commands.xserver_code import xs_redeem_code
 from bot.sql_helper.sql_emby import sql_add_emby, sql_get_emby
 from bot.func_helper.filters import user_in_group_filter, user_in_group_on_filter
 from bot.func_helper.msg_utils import deleteMessage, sendMessage, sendPhoto, callAnswer, editMessage
@@ -62,7 +63,9 @@ async def p_start(_, msg):
             else:
                 return await sendMessage(msg, '💢 你不是管理员，无法使用此命令')
         if u in f'{ranks.logo}' or u == str(msg.from_user.id):
-            await asyncio.gather(msg.delete(), rgs_code(_, msg, register_code=msg.command[1]))
+            handled = await xs_redeem_code(msg, msg.command[1])
+            if not handled:
+                await rgs_code(_, msg, register_code=msg.command[1])
         else:
             await asyncio.gather(sendMessage(msg, '🤺 你也想和bot击剑吗 ?'), msg.delete())
     except (IndexError, TypeError):

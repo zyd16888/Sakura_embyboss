@@ -88,7 +88,8 @@
     "check_ex": true,
     "partition_check": true,
     "low_activity": false,
-    "backup_db": false
+    "backup_db": false,
+    "xserver_check_ex": true
   },
   "db_is_docker": true,
   "db_docker_name": "mysql",
@@ -126,5 +127,28 @@
     "allow_origins": [
       "*"
     ]
-  }
+  },
+  "xservers": [
+    {
+      "id": "test",
+      "name": "测试服",
+      "enable": true,
+      "url": "http://10.0.0.2:8096",
+      "api": "xxxxx",
+      "line": "http://test.example.com:8096",
+      "expire_days": 15,
+      "all_user": 50,
+      "limit": 2,
+      "block_libs": [
+        "nsfw"
+      ],
+      "name_prefix": "t_",
+      "channels": {
+        "main_user": true,
+        "whitelist": false,
+        "points": true,
+        "points_cost": 100
+      }
+    }
+  ]
 }

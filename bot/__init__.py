@@ -121,6 +121,12 @@ admin_p = user_p + [
     BotCommand("only_rm_record", "删除指定的tgid数据库记录 [管理]"),
     BotCommand("restart", "重启bot [管理]"),
     BotCommand("update_bot", "更新bot [管理]"),
+    BotCommand("xspanel", "测试服管理面板 [管理]"),
+    BotCommand("xsin", "查询测试服账号 [管理]"),
+    BotCommand("xsgr", "发放测试服开号资格 [管理]"),
+    BotCommand("xsext", "测试服续期 [管理]"),
+    BotCommand("xsrm", "删除测试服账号 [管理]"),
+    BotCommand("xscrn", "开测试服续期码 [管理]"),
 ]
 
 owner_p = admin_p + [

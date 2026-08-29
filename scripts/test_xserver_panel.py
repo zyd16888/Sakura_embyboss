@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+P1/P2 验证：xserver 资格矩阵、开号流程（一键/积分/资格/收编/注销）、
+注册码兑换、到期删除任务。
+运行：python scripts/test_xserver_panel.py
+"""
+import asyncio
+import sys
+import types
+import unittest
+from datetime import datetime, timedelta
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from _xserver_boot import boot, fresh_db  # noqa: E402
+
+NS = boot()
+sx = NS["sx"]
+se = NS["se"]
+xs = NS["xs"]
+Xserver = NS["Xserver"]
+captured = NS["captured"]
+
+from bot.modules.panel import xserver_panel as xp  # noqa: E402
+from bot.modules.commands import xserver_code as xcode  # noqa: E402
+from bot.scheduler import xserver_ex  # noqa: E402
+
+
+# ---------------- 测试替身 ----------------
+
+class FakeUser:
+    def __init__(self, uid, name="u"):
+        self.id = uid
+        self.first_name = name
+
+
+class FakeCall:
+    def __init__(self, uid, data="x"):
+        self.from_user = FakeUser(uid)
+        self.data = data
+        self.message = None
+
+
+class FakeMsg:
+    def __init__(self, uid, text="", name="u"):
+        self.from_user = FakeUser(uid, name)
+        self.text = text
+
+    async def delete(self):
+        return True
+
+    async def reply(self, text, **kw):
+        captured.append(("reply", text))
+        return FakeMsg(0, text)
+
+
+class FakeService:
+    def __init__(self, create_ok=True):
+        self.create_ok = create_ok
+        self.deleted = []
+        self.disabled = []
+        self.reset = []
+        self.policy = []
+        self.existing = {}
+        self.calls = []
+
+    async def get_emby_user_by_name(self, name):
+        if name in self.existing:
+            return True, {"Id": self.existing[name], "Name": name}
+        return False, {"error": "🤕用户不存在"}
+
+    async def emby_create_x(self, name, days, password=None):
+        self.calls.append(("create", name, days, password))
+        if not self.create_ok:
+            return False
+        return f"ID-{name}", (password or "genpwd"), datetime.now() + timedelta(days=days)
+
+    async def emby_reset(self, eid, pwd):
+        self.reset.append((eid, pwd))
+        return True
+
+    async def emby_change_policy(self, eid, admin=False, disable=False):
+        self.policy.append((eid, disable))
+        return True
+
+    async def x_delete(self, eid):
+        self.deleted.append(eid)
+        return True
+
+    async def user(self, eid):
+        return False, {"error": "资源不存在"}
+
+
+def setup_server(total=10, **over):
+    fresh_db(NS)
+    xc = Xserver(id="test", name="测试服", url="http://t:8096", api="K",
+                 line="http://t.line", all_user=total, **over)
+    NS["cfg"].xservers = [xc]
+    sx.xquota_ensure("test", total)
+    return xc
+
+
+def add_main(tg, name="alice", pwd="pw123", pwd2="9999", lv="b", iv=500, embyid="MID"):
+    with se.Session() as s:
+        s.add(se.Emby(tg=tg, embyid=embyid, name=name, pwd=pwd, pwd2=pwd2,
+                      lv=lv, cr=datetime.now(), ex=datetime.now() + timedelta(days=30),
+                      us=0, iv=iv))
+        s.commit()
+
+
+def patch_service(svc):
+    """两个模块都是 `from ... import get_service`，需分别打补丁"""
+    xp.get_service = lambda sid: svc
+    xs.get_service = lambda sid: svc
+    xserver_ex.get_service = lambda sid: svc
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def open_account(call, sid, name, pwd, pwd2, copied=True):
+    return run(xp._occupy_and_open(call, sid, name, pwd, pwd2, copied=copied))
+
+
+# ---------------- 资格矩阵 ----------------
+
+class EligibilityTests(unittest.TestCase):
+    def test_matrix(self):
+        xc = setup_server()
+        main_ok = types.SimpleNamespace(embyid="E", lv="b", iv=100)
+        main_wl = types.SimpleNamespace(embyid="E", lv="a", iv=100)
+        main_none = types.SimpleNamespace(embyid=None, lv="d", iv=100)
+        grant = types.SimpleNamespace(us=30, embyid=None)
+
+        self.assertEqual(xp._eligibility(xc, main_ok, None), ('free', 0))
+        self.assertEqual(xp._eligibility(xc, main_none, None), ('points', 100))
+        self.assertEqual(xp._eligibility(xc, None, None), ('none', 0))
+        self.assertEqual(xp._eligibility(xc, main_none, grant), ('grant', 0))
+
+        xc.channels.main_user = False
+        xc.channels.whitelist = True
+        self.assertEqual(xp._eligibility(xc, main_wl, None), ('free', 0))
+        self.assertEqual(xp._eligibility(xc, main_ok, None), ('points', 100))
+
+        xc.channels.points = False
+        self.assertEqual(xp._eligibility(xc, main_ok, None), ('none', 0))
+        # 管理员直发资格不受通道开关影响
+        self.assertEqual(xp._eligibility(xc, main_ok, grant), ('grant', 0))
+
+
+# ---------------- 开号流程 ----------------
+
+class OpenFlowTests(unittest.TestCase):
+    def test_quick_copy_credentials(self):
+        setup_server()
+        add_main(111, name="alice", pwd="pw123", pwd2="9999")
+        svc = FakeService()
+        patch_service(svc)
+        ok, out = open_account(FakeCall(111), "test", "t_alice", "pw123", "9999")
+        self.assertTrue(ok, out)
+        self.assertEqual(svc.calls[0], ("create", "t_alice", 15, "pw123"))
+        a = sx.xacc_get("test", 111)
+        self.assertEqual((a.name, a.pwd, a.pwd2, a.lv), ("t_alice", "pw123", "9999", "b"))
+        self.assertEqual(sx.xquota_get("test").used, 1)
+        self.assertIn("开号成功", out)
+
+    def test_points_deduct_and_full_rollback(self):
+        setup_server()
+        add_main(222, name="bob", iv=250, embyid=None, lv='d')  # 无主服号 → 积分通道
+        svc = FakeService()
+        patch_service(svc)
+        ok, out = open_account(FakeCall(222), "test", "t_custom", None, "1234", copied=False)
+        self.assertTrue(ok, out)
+        self.assertEqual(se.sql_get_emby(222).iv, 150)   # 扣 100
+        self.assertEqual(sx.xquota_get("test").used, 1)
+
+        # 注销：退名额、不退积分
+        run(xp.xs_del_confirm(None, FakeCall(222, "xs:dc:" + xp._enc("test"))))
+        self.assertEqual(sx.xquota_get("test").used, 0)
+        self.assertEqual(se.sql_get_emby(222).iv, 150)
+
+        # 再次开号但远端建号失败 → 积分/名额回滚
+        patch_service(FakeService(create_ok=False))
+        ok2, out2 = open_account(FakeCall(222), "test", "t_other", None, "1234", copied=False)
+        self.assertFalse(ok2)
+        self.assertEqual(se.sql_get_emby(222).iv, 150)
+        self.assertEqual(sx.xquota_get("test").used, 0)
+
+    def test_slot_full_and_name_occupied(self):
+        setup_server(total=1)
+        add_main(1, name="a1")
+        add_main(2, name="a2")
+        svc = FakeService()
+        patch_service(svc)
+        ok, _ = open_account(FakeCall(1), "test", "t_a1", "p", "1")
+        self.assertTrue(ok)
+        ok2, out2 = open_account(FakeCall(2), "test", "t_a2", "p", "2")
+        self.assertFalse(ok2)
+        self.assertIn("名额已满", out2)
+
+        sx.xquota_set_total("test", 5)
+        ok3, out3 = open_account(FakeCall(2), "test", "t_a1", "p", "2")
+        self.assertFalse(ok3)
+        self.assertIn("已被占用", out3)
+        self.assertEqual(sx.xquota_get("test").used, 1)  # 拒绝路径不占坑
+
+    def test_no_double_open(self):
+        setup_server()
+        add_main(111)
+        patch_service(FakeService())
+        ok, _ = open_account(FakeCall(111), "test", "t_alice", "p", "1")
+        self.assertTrue(ok)
+        ok2, out2 = open_account(FakeCall(111), "test", "t_again", "p", "1")
+        self.assertFalse(ok2)
+        self.assertIn("已有账号", out2)
+        self.assertEqual(sx.xquota_get("test").used, 1)
+
+    def test_recapture_remote_leftover(self):
+        setup_server()
+        add_main(111, name="alice", pwd="pw123", pwd2="9999")
+        svc = FakeService()
+        svc.existing["t_alice"] = "REMOTE-9"
+        patch_service(svc)
+        ok, out = open_account(FakeCall(111), "test", "t_alice", "pw123", "9999")
+        self.assertTrue(ok, out)
+        self.assertEqual(svc.reset, [("REMOTE-9", "pw123")])
+        self.assertIn(("REMOTE-9", False), svc.policy)
+        self.assertEqual(sx.xacc_get("test", 111).embyid, "REMOTE-9")
+        self.assertEqual(svc.calls, [])  # 未走 create
+
+    def test_quick_entry_checks_main_state(self):
+        setup_server()
+        add_main(111, name="alice", lv="c")  # 主服被封印
+        patch_service(FakeService())
+        call = FakeCall(111, "xs:q:" + xp._enc("test"))
+        run(xp.xs_quick(None, call))
+        self.assertIsNone(sx.xacc_get("test", 111))
+        self.assertTrue(any("状态异常" in str(item) for item in captured))
+
+    def test_delme_releases_quota(self):
+        setup_server()
+        add_main(111)
+        svc = FakeService()
+        patch_service(svc)
+        open_account(FakeCall(111), "test", "t_alice", "pw", "9")
+        self.assertEqual(sx.xquota_get("test").used, 1)
+        run(xp.xs_del_confirm(None, FakeCall(111, "xs:dc:" + xp._enc("test"))))
+        self.assertEqual(svc.deleted, ["ID-t_alice"])
+        self.assertIsNone(sx.xacc_get("test", 111))
+        self.assertEqual(sx.xquota_get("test").used, 0)
+
+
+# ---------------- 注册码 ----------------
+
+class CodeTests(unittest.TestCase):
+    def test_is_xserver_code(self):
+        self.assertTrue(xcode.is_xserver_code("T-test-XREG_abc"))
+        self.assertTrue(xcode.is_xserver_code("T-test-XRNV_abc"))
+        self.assertFalse(xcode.is_xserver_code("T-1-Register_xyz"))
+        self.assertFalse(xcode.is_xserver_code(""))
+
+    def test_redeem_unknown_code_intercepted(self):
+        setup_server()
+        add_main(333)
+        handled = run(xcode.xs_redeem_code(FakeMsg(333), "T-test-XREG_nosuch"))
+        self.assertTrue(handled)
+        self.assertTrue(any("无效" in str(c) for c in captured))
+
+    def test_reg_code_flow_grant_then_open(self):
+        setup_server()
+        xc = NS["cfg"].xservers[0]
+        xc.channels.main_user = False   # 模拟纯资格用户
+        xc.channels.points = False
+        add_main(444, name="frank", embyid=None, lv="d")
+        self.assertTrue(sx.xcode_add(["T-test-XREG_good"], "test", 1, 30, "reg"))
+        handled = run(xcode.xs_redeem_code(FakeMsg(444), "T-test-XREG_good"))
+        self.assertTrue(handled)
+        a = sx.xacc_get("test", 444)
+        self.assertIsNotNone(a)
+        self.assertEqual(int(a.us), 30)
+        self.assertIsNone(a.embyid)
+
+        # 二次兑换同码 → 已被使用
+        handled2 = run(xcode.xs_redeem_code(FakeMsg(999), "T-test-XREG_good"))
+        self.assertTrue(handled2)
+        self.assertTrue(any("已被使用" in str(c) for c in captured))
+
+        # 资格开号：有效期=30 天，资格清零
+        svc = FakeService()
+        patch_service(svc)
+        ok, out = open_account(FakeCall(444), "test", "t_f", None, "1", copied=False)
+        self.assertTrue(ok, out)
+        self.assertEqual(svc.calls[0][2], 30)
+        a2 = sx.xacc_get("test", 444)
+        self.assertEqual(int(a2.us), 0)
+        self.assertIsNotNone(a2.embyid)
+
+    def test_renew_code_extends_existing(self):
+        setup_server()
+        add_main(555, name="grace")
+        patch_service(FakeService())
+        open_account(FakeCall(555), "test", "t_grace", "pw", "9")
+        before = sx.xacc_get("test", 555).ex
+        sx.xcode_add(["T-test-XRNV_rn"], "test", 1, 10, "renew")
+        run(xcode.xs_redeem_code(FakeMsg(555), "T-test-XRNV_rn"))
+        after = sx.xacc_get("test", 555).ex
+        self.assertTrue(after > before + timedelta(days=9))
+
+    def test_renew_code_without_account_converts(self):
+        setup_server()
+        add_main(666, name="henry", embyid=None, lv="d")
+        sx.xcode_add(["T-test-XRNV_cv"], "test", 1, 7, "renew")
+        run(xcode.xs_redeem_code(FakeMsg(666), "T-test-XRNV_cv"))
+        a = sx.xacc_get("test", 666)
+        self.assertIsNotNone(a)
+        self.assertEqual(int(a.us), 7)  # 转为资格，码不浪费
+
+
+# ---------------- 到期任务 ----------------
+
+class ExpiryTests(unittest.TestCase):
+    def test_expired_deleted_quota_released(self):
+        setup_server()
+        add_main(777, name="ivy")
+        svc = FakeService()
+        patch_service(svc)
+        open_account(FakeCall(777), "test", "t_ivy", "pw", "9")
+        self.assertEqual(sx.xquota_get("test").used, 1)
+        sx.xacc_update("test", 777, ex=datetime.now() - timedelta(minutes=1))
+        run(xserver_ex.check_xserver_expired())
+        self.assertEqual(svc.deleted, ["ID-t_ivy"])
+        self.assertIsNone(sx.xacc_get("test", 777))
+        self.assertEqual(sx.xquota_get("test").used, 0)
+
+    def test_grant_pending_row_not_touched(self):
+        """仅有资格（embyid None, ex None）的行不受到期任务影响、不回收名额"""
+        setup_server()
+        add_main(888, name="jack", embyid=None, lv="d")
+        sx.xacc_grant("test", 888, 15)
+        run(xserver_ex.check_xserver_expired())
+        a = sx.xacc_get("test", 888)
+        self.assertIsNotNone(a)
+        self.assertEqual(int(a.us), 15)
+
+    def test_half_broken_cleaned(self):
+        """embyid 有但 ex 为空的半成品 → 删除"""
+        setup_server()
+        add_main(900, name="kim")
+        svc = FakeService()
+        patch_service(svc)
+        sx.xacc_add("test", 900, "ID-ghost", "t_kim", "p", "1", None)
+        run(xserver_ex.check_xserver_expired())
+        self.assertIn("ID-ghost", svc.deleted)
+        self.assertIsNone(sx.xacc_get("test", 900))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
