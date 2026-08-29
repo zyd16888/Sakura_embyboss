@@ -428,6 +428,22 @@ class ReopenTests(unittest.TestCase):
         self.assertIsNotNone(a.embyid)
         self.assertEqual(int(a.us), 0)
 
+    def test_history_survives_cascade_and_expiry(self):
+        """级联/到期删除都不抹历史：一人一次的原则跨通道成立"""
+        setup_server(allow_reopen=False, total=5, open_total=5)
+        add_main(1300, name="nick")
+        svc = FakeService()
+        patch_service(svc)
+        ok, _ = open_account(FakeCall(1300), "test", "t_nick", "pw", "9")
+        self.assertTrue(ok)
+        # 主服被删 → 级联
+        se.sql_update_emby(se.Emby.tg == 1300, embyid=None, name=None, lv='d')
+        run(xserver_ex.check_xserver_expired())
+        self.assertTrue(sx.xhist_has_opened("test", 1300))
+        ok2, out2 = open_account(FakeCall(1300), "test", "t_nick2", "pw", "9")
+        self.assertFalse(ok2)
+        self.assertIn("只限体验一次", out2)
+
     def test_history_marks_count_and_first(self):
         setup_server(allow_reopen=True)
         add_main(1004, name="iris", iv=250, embyid=None, lv='d')
@@ -440,6 +456,89 @@ class ReopenTests(unittest.TestCase):
         self.assertEqual(h.open_count, 2)
         self.assertIsNotNone(h.first_cr)
         self.assertTrue(h.last_cr >= h.first_cr)
+
+
+# ---------------- 主服软级联 ----------------
+
+class CascadeTests(unittest.TestCase):
+    def _open_main_pool(self, tg=1101, name="leo"):
+        setup_server(total=3, open_total=3)
+        add_main(tg, name=name, pwd="pw123", pwd2="9999")
+        svc = FakeService()
+        patch_service(svc)
+        ok, out = open_account(FakeCall(tg), "test", f"t_{name}", "pw123", "9999")
+        self.assertTrue(ok, out)
+        return svc, tg
+
+    def test_main_deleted_cascades_purge(self):
+        svc, tg = self._open_main_pool()
+        se.sql_update_emby(se.Emby.tg == tg, embyid=None, name=None, pwd=None,
+                           pwd2=None, lv='d', cr=None, ex=None)   # 模拟 delme/rmemby 清空
+        run(xserver_ex.check_xserver_expired())
+        self.assertEqual(svc.deleted, [f"ID-t_leo"])
+        self.assertIsNone(sx.xacc_get("test", tg))
+        q = sx.xquota_get("test")
+        self.assertEqual((q.used, q.used_open), (0, 0))  # main 池名额退回
+
+    def test_main_banned_cascades_disable_only(self):
+        svc, tg = self._open_main_pool(1102, "monk")
+        se.sql_update_emby(se.Emby.tg == tg, lv='c')            # 模拟 check_ex 封印
+        run(xserver_ex.check_xserver_expired())
+        a = sx.xacc_get("test", tg)
+        self.assertEqual(a.lv, 'c')                             # 测试号封印但保留
+        self.assertEqual(svc.deleted, [])                       # 未删号
+        self.assertEqual(sx.xquota_get("test").used, 1)         # 名额不退
+        self.assertIn((f"ID-t_monk", True), svc.policy)         # disable=True
+        # 重复跑幂等：已是 c 不再触发策略调用
+        n = len(svc.policy)
+        run(xserver_ex.check_xserver_expired())
+        self.assertEqual(len(svc.policy), n)
+
+    def test_main_healthy_untouched(self):
+        svc, tg = self._open_main_pool(1103, "nora")
+        run(xserver_ex.check_xserver_expired())
+        self.assertEqual(svc.deleted, [])
+        a = sx.xacc_get("test", tg)
+        self.assertEqual(a.lv, 'b')
+        self.assertEqual(sx.xquota_get("test").used, 1)
+
+    def test_open_pool_immune(self):
+        """open 池用户：主服无号是常态，绝不被级联误伤"""
+        setup_server(total=3, open_total=3)
+        add_main(1104, name="paul", iv=250, embyid=None, lv='d')
+        svc = FakeService()
+        patch_service(svc)
+        ok, out = open_account(FakeCall(1104), "test", "t_paul", None, "1", copied=False)
+        self.assertTrue(ok, out)
+        run(xserver_ex.check_xserver_expired())
+        self.assertEqual(svc.deleted, [])
+        self.assertEqual(sx.xquota_get("test").used_open, 1)
+
+    def test_grant_pending_row_immune(self):
+        setup_server()
+        add_main(1105, name="quinn", embyid=None, lv='d')
+        sx.xacc_grant("test", 1105, 10)   # 资格行，无 embyid
+        patch_service(FakeService())
+        run(xserver_ex.check_xserver_expired())
+        a = sx.xacc_get("test", 1105)
+        self.assertIsNotNone(a)
+        self.assertEqual(int(a.us), 10)
+
+    def test_remote_delete_failure_keeps_row(self):
+        svc, tg = self._open_main_pool(1106, "rita")
+
+        async def fail_delete(eid):
+            return False
+
+        async def alive_user(eid):
+            return True, {"Id": eid}       # 远端还在 → 不是 404
+
+        svc.x_delete = fail_delete
+        svc.user = alive_user
+        se.sql_update_emby(se.Emby.tg == tg, embyid=None, lv='d')
+        run(xserver_ex.check_xserver_expired())
+        self.assertIsNotNone(sx.xacc_get("test", tg))           # 保留待下轮重试
+        self.assertEqual(sx.xquota_get("test").used, 1)         # 名额未退
 
 
 if __name__ == "__main__":
