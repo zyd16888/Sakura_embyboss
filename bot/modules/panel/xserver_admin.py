@@ -14,6 +14,7 @@ xserver（测试服）管理面板 —— 全部走新表新文件，不触碰�
 
 回调前缀 `xsa:`，server_id 一律 hex 编码；名额类回调携带 pool 段（main|open）。
 """
+import re
 from datetime import datetime, timedelta
 
 from pyrogram import filters
@@ -84,7 +85,8 @@ def _admin_home_text(xc, q) -> str:
             f"· 地址 | `{xc.url}`\n"
             f"· 线路 | {xc.line}\n"
             f"{quota_block}"
-            f"· 有效期 | {xc.expire_days} 天 · 前缀 `{xc.name_prefix}` · 并发 {xc.limit}\n\n"
+            f"· 有效期 | {xc.expire_days} 天 · 前缀 `{xc.name_prefix}` · 并发 {xc.limit}\n"
+            f"· 复开策略 | {'🔁 允许再次开号' if xc.allow_reopen else '🎫 每人仅限一次（防蹲坑）'}\n\n"
             f"**开号通道**\n"
             f"{on(ch.main_user)} 主服一键 · {on(ch.whitelist)} 白名单免费 · "
             f"{on(ch.points)} 积分 {ch.points_cost}{sakura_b}")
@@ -104,50 +106,191 @@ def _admin_home_ikb(sid: str, xc) -> list:
         [(f'{dot(ch.main_user)}主服一键', f'xsa:tc:{eh}:main_user'),
          (f'{dot(ch.whitelist)}白名单', f'xsa:tc:{eh}:whitelist'),
          (f'{dot(ch.points)}积分兑换', f'xsa:tc:{eh}:points')],
-        [(f'💰 改单价{ch.points_cost}', f'xsa:pc:{eh}')],
+        [(f'💰 改单价{ch.points_cost}', f'xsa:pc:{eh}'),
+         (f'{"🟢" if xc.allow_reopen else "🔴"}允许复开', f'xsa:ro:{eh}'),
+         ('⚙️ 参数配置', f'xsa:cfg:{eh}')],
         [('🎫 开资格码', f'xsa:cr:{eh}'), ('📋 账号列表', f'xsa:li:{eh}:0')],
         [('🔙 返回', 'manage')],
     ]
 
-
 async def _admin_home_render(_, update, sid: str):
-    xc = _xc_of(sid)
+    xc = await _xc_any(sid)  # 管理侧允许已禁用的服务器
     if xc is None:
-        return await callAnswer(update, '⚠️ 该服务器未开放', True)
-    get_service(sid)  # 确保 quota 种子
+        return await callAnswer(update, '⚠️ 服务器不存在', True)
+    if xc.enable:
+        get_service(sid)  # 确保 quota 种子
     q = xquota_get(sid)
     if isinstance(update, CallbackQuery):
         await callAnswer(update, f'🧪 {xc.name}')
     return await editMessage(update, _admin_home_text(xc, q),
                              buttons=ikb(_admin_home_ikb(sid, xc)))
 
+def _all_configured_servers():
+    return list(config.xservers or [])
+
+
+def _server_rows(servers):
+    return [[(f'{"🧪" if xc.enable else "🔴"} {xc.name}', f'xsa:h:{_enc(xc.id)}')]
+            for xc in servers]
+
 
 @bot.on_message(filters.command('xspanel', prefixes) & admins_on_filter & filters.private)
 async def xs_admin_cmd(_, msg):
     await deleteMessage(msg)
-    servers = enabled_servers()
+    servers = _all_configured_servers()
     if not servers:
-        return await sendMessage(msg, '⚠️ 尚未配置启用的测试服（config.xservers）', timer=60)
+        return await sendMessage(msg, '⚠️ 尚未配置测试服（config.xservers）', timer=60)
     if len(servers) == 1:
         return await _admin_home_render(_, msg, servers[0].id)
-    rows = [[(f'🧪 {xc.name}', f'xsa:h:{_enc(xc.id)}')] for xc in servers]
-    await sendMessage(msg, '**🧪 测试服管理 · 选择服务器**', buttons=ikb(rows))
+    rows = _server_rows(servers)
+    await sendMessage(msg, '**🧪 测试服管理 · 选择服务器**（🔴=已禁用）',
+                      buttons=ikb(rows))
 
 
 @bot.on_callback_query(filters.regex('^xsa:m$') & admins_on_filter)
 async def xs_admin_menu_cb(_, call):
-    servers = enabled_servers()
+    servers = _all_configured_servers()
     if not servers:
-        return await callAnswer(call, '⚠️ 无启用的测试服', True)
+        return await callAnswer(call, '⚠️ 无配置的测试服', True)
     if len(servers) == 1:
         return await _admin_home_render(_, call, servers[0].id)
-    rows = [[(f'🧪 {xc.name}', f'xsa:h:{_enc(xc.id)}')] for xc in servers]
-    await editMessage(call, '**🧪 测试服管理 · 选择服务器**', buttons=ikb(rows))
+    await editMessage(call, '**🧪 测试服管理 · 选择服务器**（🔴=已禁用）',
+                      buttons=ikb(_server_rows(servers)))
 
 
 @bot.on_callback_query(filters.regex('^xsa:h:') & admins_on_filter)
 async def xs_admin_home_cb(_, call):
     return await _admin_home_render(_, call, _dec(call.data.split(':')[2]))
+
+
+# ---------------- ⚙️ 参数配置页 ----------------
+
+async def _xc_any(sid: str):
+    """管理侧解析：允许已禁用的服务器（否则无法解禁）"""
+    for xc in config.xservers or []:
+        if xc.id == sid:
+            return xc
+    return None
+
+
+def _settings_text(xc) -> str:
+    bl = '、'.join(xc.block_libs) if xc.block_libs else '（无）'
+    return (f"**▎⚙️ {xc.name} · 参数配置**\n\n"
+            f"{'🟢 已启用' if xc.enable else '🔴 已禁用（用户侧不可见）'}\n\n"
+            f"· 显示名 | {xc.name}\n"
+            f"· 管理地址 url | `{xc.url}`\n"
+            f"· API Key | `{'已设置' if xc.api else '⚠️ 空'}`\n"
+            f"· 用户线路 line | {xc.line or '（空）'}\n"
+            f"· 有效天数 expire_days | {xc.expire_days}\n"
+            f"· 并发上限 limit | {xc.limit}\n"
+            f"· 用户名前缀 name_prefix | `{xc.name_prefix}`\n"
+            f"· 隐藏媒体库 block_libs | {bl}\n\n"
+            f"_点击对应按钮修改；url/api 修改后自动重建连接，即时生效_")
+
+
+def _settings_ikb(sid: str, xc) -> list:
+    eh = _enc(sid)
+    return [
+        [(f'{"🟢" if xc.enable else "🔴"} 启用/禁用', f'xsa:se:{eh}')],
+        [('📛 显示名', f'xsa:cf:{eh}:name'), ('🌐 线路line', f'xsa:cf:{eh}:line')],
+        [('🔗 地址url', f'xsa:cf:{eh}:url'), ('🔑 APIKey', f'xsa:cf:{eh}:api')],
+        [(f'⏳ 天数({xc.expire_days})', f'xsa:cf:{eh}:expire_days'),
+         (f'📡 并发({xc.limit})', f'xsa:cf:{eh}:limit')],
+        [(f'🏷 前缀({xc.name_prefix})', f'xsa:cf:{eh}:name_prefix')],
+        [('🚫 隐藏库', f'xsa:cf:{eh}:block_libs')],
+        [('🔙 返回主页', f'xsa:h:{eh}')],
+    ]
+
+
+@bot.on_callback_query(filters.regex('^xsa:cfg:') & admins_on_filter)
+async def xs_settings_cb(_, call):
+    sid = _dec(call.data.split(':')[2])
+    xc = await _xc_any(sid)
+    if xc is None:
+        return await callAnswer(call, '⚠️ 服务器不存在', True)
+    await callAnswer(call, '⚙️ 参数配置')
+    await editMessage(call, _settings_text(xc), buttons=ikb(_settings_ikb(sid, xc)))
+
+
+@bot.on_callback_query(filters.regex('^xsa:se:') & admins_on_filter)
+async def xs_toggle_enable(_, call):
+    sid = _dec(call.data.split(':')[2])
+    xc = await _xc_any(sid)
+    if xc is None:
+        return await callAnswer(call, '⚠️ 服务器不存在', True)
+    xc.enable = not xc.enable
+    save_config()
+    LOGGER.info(f'【xserver管理】{call.from_user.id} {"启用" if xc.enable else "禁用"} 服务器 {sid}')
+    if xc.enable:
+        get_service(sid)  # 重建连接 + quota 种子
+    await editMessage(call, f'{"🟢 已启用" if xc.enable else "🔴 已禁用"} `{sid}`',
+                      buttons=ikb([[('⚙️ 继续配置', f'xsa:cfg:{_enc(sid)}')],
+                                   [('🔙 主页', 'xsa:m')]]))
+
+
+_SET_HINTS = {
+    'name': ('📛 发送新的**显示名**（≤12字）', str, None),
+    'url': ('🔗 发送新的**管理地址**，例 `http://10.0.0.2:8096`', str,
+            lambda v: v.startswith(('http://', 'https://')) or '仅支持 http(s):// 开头'),
+    'api': ('🔑 发送新的 **Emby API Key**', str, None),
+    'line': ('🌐 发送新的**用户线路展示文本**（可多行）', str, None),
+    'expire_days': ('⏳ 发送新的**有效天数**（1-3650 整数）', int,
+                    lambda v: 1 <= v <= 3650 or '天数须在 1-3650 之间'),
+    'limit': ('📡 发送新的**同时连接数**（1-10 整数）', int,
+              lambda v: 1 <= v <= 10 or '并发须在 1-10 之间'),
+    'name_prefix': ('🏷 发送新的**用户名前缀**（≤8字符，不含空格，例 `t_`）', str,
+                    lambda v: (not re.search(r'[\s~`*\[\]()#+\\|<>:/?@&%$^{}=";\']', v))
+                    or '前缀不能含空格/特殊字符'),
+    'block_libs': ('🚫 发送要隐藏的媒体库名称，**逗号分隔**；发送 `-` 清空\n'
+                   '例：`nsfw, 测试库`', str, None),
+}
+
+
+@bot.on_callback_query(filters.regex('^xsa:cf:') & admins_on_filter)
+async def xs_edit_field(_, call):
+    parts = call.data.split(':')
+    sid_hex, field = parts[2], parts[3]
+    if field not in _SET_HINTS:
+        return await callAnswer(call, '⚠️ 未知字段', True)
+    sid = _dec(sid_hex)
+    xc = await _xc_any(sid)
+    if xc is None:
+        return await callAnswer(call, '⚠️ 服务器不存在', True)
+    hint, caster, validator = _SET_HINTS[field]
+    shown = '（已设置，输入新值将覆盖）' if field == 'api' and xc.api else getattr(xc, field)
+    msg = await ask_return(call, text=f'{hint}\n\n当前值：`{shown}`\n\n取消 /cancel',
+                           timer=120)
+    if not msg:
+        return
+    if msg.text.strip() == '/cancel':
+        return await editMessage(call, _settings_text(xc), buttons=ikb(_settings_ikb(sid, xc)))
+    raw = msg.text
+    try:
+        if field == 'block_libs':
+            newv = [] if raw.strip() == '-' else [s.strip() for s in raw.split(',') if s.strip()]
+        elif caster is int:
+            newv = int(raw.strip())
+        else:
+            newv = raw.strip()
+            if field == 'name' and len(newv) > 12:
+                raise ValueError('显示名不能超过12字')
+            if field == 'url':
+                newv = newv.rstrip('/')
+    except ValueError as e:
+        return await sendMessage(call, f'⚠️ {e or "格式错误，请输入整数"}', timer=60)
+    if not newv and field in ('url', 'api', 'name'):
+        return await sendMessage(call, '⚠️ 该字段不能为空', timer=60)
+    if validator:
+        check = validator(newv)
+        if check is not True:
+            return await sendMessage(call, f'⚠️ {check}', timer=60)
+    setattr(xc, field, newv)
+    save_config()
+    if field in ('url', 'api'):
+        get_service(sid)  # 签名变化 → registry 重建连接
+    LOGGER.info(f'【xserver管理】{call.from_user.id} 修改 {sid}.{field} -> {newv}')
+    await sendMessage(call, f'✅ `{field}` 已更新', timer=30)
+    await editMessage(call, _settings_text(xc), buttons=ikb(_settings_ikb(sid, xc)))
 
 
 # ---------------- 名额调整（双池） ----------------
@@ -233,6 +376,19 @@ async def xs_points_cost(_, call):
     xc.channels.points_cost = cost
     save_config()
     LOGGER.info(f'【xserver管理】{call.from_user.id} 设置 {sid} 积分单价 -> {cost}')
+    await _admin_home_render(_, call, sid)
+
+
+@bot.on_callback_query(filters.regex('^xsa:ro:') & admins_on_filter)
+async def xs_toggle_reopen(_, call):
+    sid = _dec(call.data.split(':')[2])
+    xc = await _xc_any(sid)
+    if xc is None:
+        return await callAnswer(call, '⚠️ 服务器不存在', True)
+    xc.allow_reopen = not xc.allow_reopen
+    save_config()
+    LOGGER.info(f'【xserver管理】{call.from_user.id} 切换 {sid} allow_reopen -> '
+                f'{xc.allow_reopen}')
     await _admin_home_render(_, call, sid)
 
 

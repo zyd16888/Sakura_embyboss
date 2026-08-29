@@ -176,6 +176,9 @@ class Xserver(BaseModel):
     block_libs: Optional[List[str]] = []
     # 开号用户名前缀，用于与主服账号区分
     name_prefix: str = "t_"
+    # 是否允许同一用户开过号后再次开号（默认否：一次性体验，防脚本蹲坑）。
+    # 关闭时管理员直发/资格码兑换的 grant 通道不受限，可定向放行回锅用户
+    allow_reopen: bool = False
     channels: XserverChannels = Field(default_factory=XserverChannels)
 
 

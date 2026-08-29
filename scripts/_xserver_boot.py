@@ -237,10 +237,10 @@ def boot():
 
 
 def fresh_db(ns, extra_tables=()):
-    """sqlite 内存库：xserver 三表 + emby 表；接管两个模块的 Session"""
+    """sqlite 内存库：xserver 四表 + emby 表；接管两个模块的 Session"""
     eng = create_engine("sqlite://")
     for t in (ns["sx"].XserverAccount, ns["sx"].XserverQuota, ns["sx"].XserverCode,
-              ns["se"].Emby, *extra_tables):
+              ns["sx"].XserverHistory, ns["se"].Emby, *extra_tables):
         t.__table__.create(eng)
     sm = sessionmaker(bind=eng)
     ns["sx"].Session = sm

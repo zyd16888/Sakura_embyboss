@@ -16,8 +16,7 @@ depends_on = None
 
 
 def _has_column(table, column):
-    from alembic import op as _op
-    inspector = sa.inspect(_op.get_bind())
+    inspector = sa.inspect(op.get_bind())
     return column in {c["name"] for c in inspector.get_columns(table)}
 
 
@@ -67,6 +66,19 @@ def upgrade() -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         """
     )
+    # 开号历史表（allow_reopen 判定，账号删除后仍永久保留）
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS `xserver_history` (
+          `server_id` VARCHAR(50) NOT NULL,
+          `tg` BIGINT NOT NULL,
+          `first_cr` DATETIME NULL,
+          `last_cr` DATETIME NULL,
+          `open_count` INT NULL,
+          PRIMARY KEY (`server_id`, `tg`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """
+    )
 
     # 对已按旧版建表（无 us/pool/total_open/used_open）的库做增列
     if not _has_column("xserver_account", "us"):
@@ -80,6 +92,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DROP TABLE IF EXISTS `xserver_history`;")
     op.execute("DROP TABLE IF EXISTS `xserver_code`;")
     op.execute("DROP TABLE IF EXISTS `xserver_quota`;")
     op.execute("DROP TABLE IF EXISTS `xserver_account`;")

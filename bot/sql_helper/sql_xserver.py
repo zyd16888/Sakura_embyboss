@@ -61,6 +61,50 @@ class XserverCode(Base):
     usedtime = Column(DateTime, nullable=True)
 
 
+class XserverHistory(Base):
+    """开号历史表 (server_id, tg)：账号删除后 xserver_account 行即消失，
+    此表永久保留「该用户在这台服务器开过号」的事实，供 allow_reopen 判定。"""
+    __tablename__ = 'xserver_history'
+    server_id = Column(String(50), primary_key=True, autoincrement=False)
+    tg = Column(BigInteger, primary_key=True, autoincrement=False)
+    first_cr = Column(DateTime, nullable=True)
+    last_cr = Column(DateTime, nullable=True)
+    open_count = Column(Integer, default=1)
+
+
+def xhist_mark(server_id: str, tg: int) -> bool:
+    """开号成功时记账：无行建行为首次，有行则累加次数"""
+    with Session() as session:
+        try:
+            row = session.query(XserverHistory).filter(
+                XserverHistory.server_id == server_id,
+                XserverHistory.tg == tg).first()
+            now = datetime.now()
+            if row is None:
+                session.add(XserverHistory(server_id=server_id, tg=tg,
+                                           first_cr=now, last_cr=now, open_count=1))
+            else:
+                row.last_cr = now
+                row.open_count = int(row.open_count or 0) + 1
+            session.commit()
+            return True
+        except Exception as e:
+            LOGGER.error(f"【xserver】hist_mark 失败 {server_id}/{tg}: {e}")
+            session.rollback()
+            return False
+
+
+def xhist_has_opened(server_id: str, tg: int) -> bool:
+    with Session() as session:
+        try:
+            return session.query(XserverHistory).filter(
+                XserverHistory.server_id == server_id,
+                XserverHistory.tg == tg).first() is not None
+        except Exception as e:
+            LOGGER.error(f"【xserver】hist_has_opened 失败 {server_id}/{tg}: {e}")
+            return False
+
+
 # ---------------- quota（双池） ----------------
 
 def _pool_cols(pool: str):

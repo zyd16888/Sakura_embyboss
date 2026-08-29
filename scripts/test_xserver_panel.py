@@ -95,6 +95,8 @@ class FakeService:
 
 
 def setup_server(total=10, open_total=None, **over):
+    # 默认 allow_reopen=True 保持历史回滚类用例语义；复开限制单独测
+    over.setdefault('allow_reopen', True)
     fresh_db(NS)
     xc = Xserver(id="test", name="测试服", url="http://t:8096", api="K",
                  line="http://t.line", all_user=total,
@@ -379,6 +381,65 @@ class ExpiryTests(unittest.TestCase):
         run(xserver_ex.check_xserver_expired())
         self.assertIn("ID-ghost", svc.deleted)
         self.assertIsNone(sx.xacc_get("test", 900))
+
+
+# ---------------- 复开限制（防脚本蹲坑） ----------------
+
+class ReopenTests(unittest.TestCase):
+    def _open_then_expire(self, tg, name):
+        add_main(tg, name=name, iv=250, embyid=None, lv='d')  # open 池用户，积分通道
+        svc = FakeService()
+        patch_service(svc)
+        ok, out = open_account(FakeCall(tg), "test", f"t_{name}", None, "1", copied=False)
+        self.assertTrue(ok, out)
+        # 到期删除：名额回收，历史保留
+        sx.xacc_update("test", tg, ex=datetime.now() - timedelta(minutes=1))
+        run(xserver_ex.check_xserver_expired())
+        self.assertEqual(sx.xquota_get("test").used_open, 0)  # 坑已回
+        self.assertTrue(sx.xhist_has_opened("test", tg))
+        return svc
+
+    def test_reopen_blocked_when_disabled(self):
+        setup_server(allow_reopen=False)
+        self._open_then_expire(1001, "eve")
+        # 回收的名额不能被他再抢回去
+        ok, out = open_account(FakeCall(1001), "test", "t_eve2", None, "1", copied=False)
+        self.assertFalse(ok)
+        self.assertIn("只限体验一次", out)
+        self.assertEqual(sx.xquota_get("test").used_open, 0)
+
+    def test_reopen_allowed_when_enabled(self):
+        setup_server(allow_reopen=True)
+        self._open_then_expire(1002, "frank")
+        ok, out = open_account(FakeCall(1002), "test", "t_frank2", None, "1", copied=False)
+        self.assertTrue(ok, out)
+        self.assertEqual(sx.xquota_get("test").used_open, 1)
+        self.assertIsNotNone(sx.xacc_get("test", 1002))
+
+    def test_grant_channel_exempt_from_lock(self):
+        """管理员给回锅用户直发资格 → 绕过复开限制（定向放行），有效期=资格天数"""
+        setup_server(allow_reopen=False)
+        svc = self._open_then_expire(1003, "grace")
+        sx.xacc_grant("test", 1003, 7)
+        ok, out = open_account(FakeCall(1003), "test", "t_grace2", None, "1", copied=False)
+        self.assertTrue(ok, out)
+        self.assertEqual(svc.calls[-1][2], 7)  # days 用资格天数
+        a = sx.xacc_get("test", 1003)
+        self.assertIsNotNone(a.embyid)
+        self.assertEqual(int(a.us), 0)
+
+    def test_history_marks_count_and_first(self):
+        setup_server(allow_reopen=True)
+        add_main(1004, name="iris", iv=250, embyid=None, lv='d')
+        patch_service(FakeService())
+        open_account(FakeCall(1004), "test", "t_iris", None, "1", copied=False)
+        run(xp.xs_del_confirm(None, FakeCall(1004, "xs:dc:" + xp._enc("test"))))
+        open_account(FakeCall(1004), "test", "t_iris2", None, "1", copied=False)
+        with sx.Session() as s:
+            h = s.query(sx.XserverHistory).filter_by(server_id="test", tg=1004).first()
+        self.assertEqual(h.open_count, 2)
+        self.assertIsNotNone(h.first_cr)
+        self.assertTrue(h.last_cr >= h.first_cr)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ from bot.sql_helper.sql_emby import sql_get_emby, sql_update_emby, Emby
 from bot.sql_helper.sql_xserver import (xacc_get, xacc_get_any, xacc_add, xacc_update,
                                         xacc_delete, xquota_get, xquota_take, xquota_give,
                                         xquota_pool_used, xquota_pool_total,
+                                        xhist_mark, xhist_has_opened,
                                         POOL_MAIN, POOL_OPEN)
 
 # 用户名禁用字符：空白 + markdown/Emby 敏感符号
@@ -159,10 +160,12 @@ async def xs_home_show(_, call, sid: str):
     if a and a.embyid:
         acc_line = f" · `{a.name}` | 状态 {a.lv} | 到期 `{a.ex}`"
 
+    # 线路仅对已在本服开过号的用户展示
+    line_block = f"· 线路 |\n{xc.line}" if (a and a.embyid) else "· 线路 | 🔒 开通账号后可见"
     text = (f"**▎🧪 {xc.name}面板**\n\n"
             f"· 我的账号{acc_line}\n"
             f"{_quota_lines(q, pool)}\n"
-            f"· 线路 |\n{xc.line}\n\n"
+            f"{line_block}\n\n"
             f"**开号通道**\n{_channel_text(xc, main)}\n\n"
             f"_用户名统一加前缀 `{xc.name_prefix}`；到期自动删除并回收名额_")
 
@@ -175,7 +178,11 @@ async def xs_home_show(_, call, sid: str):
         if a.lv != 'b':
             buttons.append([('⚠️ 账号已被管理员封印', f'xs:h:{_enc(sid)}')])
     elif kind != 'none':
-        if slot_left:
+        reopen_locked = (kind != 'grant' and not xc.allow_reopen
+                         and xhist_has_opened(sid, tg))
+        if reopen_locked:
+            buttons.append([('🚫 你已体验过一次，名额留给别人', f'xs:h:{_enc(sid)}')])
+        elif slot_left:
             if main and main.embyid:
                 buttons.append([(f'🚀 一键开号{_fmt_cost(kind, cost)}', f'xs:q:{_enc(sid)}')])
             buttons.append([(f'📝 单独开号{_fmt_cost(kind, cost)}', f'xs:c:{_enc(sid)}')])
@@ -208,11 +215,15 @@ async def _rollback(tg: int, sid: str, cost: int, paid_iv: bool,
 
 
 def _write_account(sid: str, tg: int, pending, eid, name, pwd, pwd2, ex, pool: str) -> bool:
-    """把资格待用行转正，或新建账号行；均记录占用的名额池"""
+    """把资格待用行转正，或新建账号行；均记录占用的名额池，并记开号历史"""
     if pending is not None:
-        return xacc_update(sid, tg, embyid=eid, name=name, pwd=pwd, pwd2=pwd2,
-                           lv='b', cr=datetime.now(), ex=ex, us=0, pool=pool)
-    return xacc_add(sid, tg, eid, name, pwd, pwd2, ex, pool=pool)
+        ok = xacc_update(sid, tg, embyid=eid, name=name, pwd=pwd, pwd2=pwd2,
+                         lv='b', cr=datetime.now(), ex=ex, us=0, pool=pool)
+    else:
+        ok = xacc_add(sid, tg, eid, name, pwd, pwd2, ex, pool=pool)
+    if ok:
+        xhist_mark(sid, tg)
+    return ok
 
 
 def _success_text(xc: Xserver, name, pwd, pwd2, ex, copied: bool) -> str:
@@ -251,6 +262,12 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
         return False, '🚫 当前未开放开号资格，请联系管理员或先获取注册码'
     if kind == 'points' and int(main.iv or 0) < cost:
         return False, f'💦 {sakura_b}不足，开号需要 {cost}{sakura_b}，当前 {int(main.iv or 0)}'
+
+    # 复开限制：默认一人一次（防脚本蹲坑回收后再抢）；grant 通道豁免，
+    # 管理员直发资格即定向放行回锅用户
+    if kind != 'grant' and not xc.allow_reopen and xhist_has_opened(sid, tg):
+        return False, ('🚫 测试服账号**每人只限体验一次**，你的历史体验已结束，\n'
+                       '名额请留给其他小伙伴。如需再次体验请联系管理员。')
 
     pool = _pool_of(main)
     pool_name = '主服用户' if pool == POOL_MAIN else '开放池'
