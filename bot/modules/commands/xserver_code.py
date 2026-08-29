@@ -10,8 +10,8 @@ start.py 的分发判定是 `u in f'{ranks.logo}'`，码内含 LOGO 故天然可
 """
 from bot import LOGGER
 from bot.func_helper.msg_utils import sendMessage
-from bot.sql_helper.sql_xserver import (xcode_get, xcode_redeem, xacc_get,
-                                        xacc_update, xacc_grant)
+from bot.sql_helper.sql_xserver import (xcode_get, xcode_redeem, xcode_restore,
+                                        xacc_get, xacc_update, xacc_grant)
 
 XREG_MARK = '-XREG_'
 XRNV_MARK = '-XRNV_'
@@ -44,32 +44,46 @@ async def xs_redeem_code(msg, code: str) -> bool:
         a = xacc_get(server_id, tg)
         if a and a.embyid:
             # 已有测试号 → 资格入账，留作下次开号使用
-            xacc_update(server_id, tg, us=int(a.us or 0) + days)
+            total_days = int(a.us or 0) + days
+            if not xacc_update(server_id, tg, us=total_days):
+                return await _credit_failed(msg, code, tg)
             await sendMessage(msg, f'🎉 你在 `{server_id}` 已有测试账号，'
-                                   f'本码 {days} 天资格已入账（累计 {int(a.us or 0) + days} 天），'
+                                   f'本码 {days} 天资格已入账（累计 {total_days} 天），'
                                    f'下次开号时优先使用。')
         else:
-            xacc_grant(server_id, tg, days)
+            if not xacc_grant(server_id, tg, days):
+                return await _credit_failed(msg, code, tg)
             await sendMessage(msg, f'🎉 已获得测试服 `{server_id}` **开号资格 {days} 天**！\n'
                                    f'前往【🧪 测试服开号】使用，用户名将自动加前缀。')
     else:
         a = xacc_get(server_id, tg)
         if not a or not a.embyid:
             # 续期码但没有可续的号：转为资格，不让码作废
-            xacc_grant(server_id, tg, days)
+            if not xacc_grant(server_id, tg, days):
+                return await _credit_failed(msg, code, tg)
             await sendMessage(msg, f'🔔 你没有 `{server_id}` 的测试账号，'
                                    f'该续期码 {days} 天已转为**开号资格**。')
         else:
             from datetime import datetime, timedelta
             base = a.ex if (a.ex and a.ex > datetime.now() and a.lv == 'b') else datetime.now()
             new_ex = base + timedelta(days=days)
-            xacc_update(server_id, tg, ex=new_ex)
+            if not xacc_update(server_id, tg, ex=new_ex):
+                return await _credit_failed(msg, code, tg)
             await sendMessage(msg, f'🎊 `{server_id}` 测试号已续期 {days} 天\n'
                                    f'新到期时间：{new_ex}')
     masked = code[:-7] + '░' * 7
     LOGGER.info(f'【xserver码】{msg.from_user.first_name}[{tg}] 使用 {code}')
     await sendMessage(msg, f'· 🧪 测试服码使用 - [{msg.from_user.first_name}]'
                           f'(tg://user?id={tg}) 使用了 {masked}', send=True)
+    return True
+
+
+async def _credit_failed(msg, code: str, tg: int) -> bool:
+    restored = xcode_restore(code, tg)
+    LOGGER.error(f'【xserver码】入账失败 {code} -> tg={tg}, restored={restored}')
+    text = ('⚠️ 测试服资格入账失败，注册码未消耗，请稍后重试。' if restored else
+            '❌ 测试服资格入账失败且注册码状态回滚失败，请联系管理员处理。')
+    await sendMessage(msg, text, timer=60)
     return True
 
 

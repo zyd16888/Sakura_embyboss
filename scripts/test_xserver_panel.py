@@ -49,6 +49,7 @@ class FakeMsg:
     def __init__(self, uid, text="", name="u"):
         self.from_user = FakeUser(uid, name)
         self.text = text
+        self.command = text.lstrip('/!.，。').split()
 
     async def delete(self):
         return True
@@ -116,8 +117,9 @@ def add_main(tg, name="alice", pwd="pw123", pwd2="9999", lv="b", iv=500, embyid=
 
 
 def patch_service(svc):
-    """两个模块都是 `from ... import get_service`，需分别打补丁"""
+    """所有 xserver 模块均用直接导入，测试时同步替换服务实例。"""
     xp.get_service = lambda sid: svc
+    xa.get_service = lambda sid: svc
     xs.get_service = lambda sid: svc
     xserver_ex.get_service = lambda sid: svc
 
@@ -361,6 +363,22 @@ class CodeTests(unittest.TestCase):
         self.assertIsNotNone(a)
         self.assertEqual(int(a.us), 7)  # 转为资格，码不浪费
 
+    def test_credit_failure_restores_code(self):
+        setup_server()
+        add_main(667, name="ida", embyid=None, lv="d")
+        code = "T-test-XREG_restore"
+        sx.xcode_add([code], "test", 1, 7, "reg")
+        original_grant = xcode.xacc_grant
+        xcode.xacc_grant = lambda *args, **kwargs: False
+        try:
+            handled = run(xcode.xs_redeem_code(FakeMsg(667), code))
+        finally:
+            xcode.xacc_grant = original_grant
+
+        self.assertTrue(handled)
+        self.assertIsNone(sx.xcode_get(code).used)
+        self.assertTrue(any("注册码未消耗" in str(item) for item in captured))
+
 
 # ---------------- 管理面板入口 ----------------
 
@@ -375,6 +393,53 @@ class AdminPanelEntryTests(unittest.TestCase):
         self.assertIn("测试服 · 管理", captured[0][1])
         self.assertEqual(captured[-1], ("delete",))
         self.assertFalse(any(item[0] == "edit" for item in captured))
+
+    def test_grant_command_replies_before_deleting_request(self):
+        setup_server()
+        add_main(2001, name="grant-user", embyid=None, lv="d")
+        msg = FakeMsg(1, "/xsgr 2001 7", "admin")
+
+        run(xa.xs_admin_grant(None, msg))
+
+        self.assertEqual(int(sx.xacc_get("test", 2001).us), 7)
+        self.assertEqual(captured[0][0], "send")
+        self.assertEqual(captured[-1], ("delete",))
+
+    def test_remove_aborts_without_remote_service(self):
+        setup_server()
+        add_main(2002, name="remove-user")
+        svc = FakeService()
+        patch_service(svc)
+        open_account(FakeCall(2002), "test", "t_remove", "pw", "9")
+        xa.get_service = lambda sid: None
+        msg = FakeMsg(1, "/xsrm 2002", "admin")
+
+        run(xa.xs_admin_remove(None, msg))
+
+        self.assertIsNotNone(sx.xacc_get("test", 2002))
+        self.assertEqual(sx.xquota_get("test").used, 1)
+        self.assertEqual(svc.deleted, [])
+        self.assertTrue(any("避免遗留远端账号" in str(item) for item in captured))
+
+    def test_panel_delete_requires_confirmation(self):
+        setup_server()
+        add_main(2003, name="delete-user")
+        svc = FakeService()
+        patch_service(svc)
+        open_account(FakeCall(2003), "test", "t_delete", "pw", "9")
+        sid_hex = xp._enc("test")
+
+        run(xa.xs_admin_delete_ask(None, FakeCall(1, f"xsa:ox:{sid_hex}:2003")))
+
+        self.assertIsNotNone(sx.xacc_get("test", 2003))
+        self.assertEqual(svc.deleted, [])
+        self.assertTrue(any("确认删除测试服账号" in str(item) for item in captured))
+
+        run(xa.xs_admin_delete_cb(None, FakeCall(1, f"xsa:oxc:{sid_hex}:2003")))
+
+        self.assertIsNone(sx.xacc_get("test", 2003))
+        self.assertEqual(svc.deleted, ["ID-t_delete"])
+        self.assertEqual(sx.xquota_get("test").used, 0)
 
 
 # ---------------- 到期任务 ----------------

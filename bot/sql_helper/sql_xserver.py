@@ -384,6 +384,22 @@ def xcode_redeem(code: str, tg: int):
             session.rollback()
             return False, None, 0
 
+def xcode_restore(code: str, tg: int) -> bool:
+    """入账失败时归还刚被该用户占用的注册码。"""
+    with Session() as session:
+        try:
+            cnt = session.query(XserverCode).filter(
+                XserverCode.code == code,
+                XserverCode.used == tg,
+            ).update({XserverCode.used: None, XserverCode.usedtime: None},
+                     synchronize_session=False)
+            session.commit()
+            return cnt == 1
+        except Exception as e:
+            LOGGER.error(f"【xserver】code_restore 失败: {e}")
+            session.rollback()
+            return False
+
 
 def xcode_unused_of(server_id: str, kind: str = 'reg'):
     with Session() as session:

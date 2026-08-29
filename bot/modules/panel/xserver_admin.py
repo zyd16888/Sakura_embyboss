@@ -31,8 +31,8 @@ from bot.sql_helper.sql_emby import sql_get_emby
 from bot.sql_helper.sql_xserver import (xacc_get, xacc_get_any, xacc_all, xacc_update,
                                         xacc_delete, xacc_grant, xquota_get,
                                         xquota_set_total, xquota_give, xcode_add,
-                                        xquota_pool_used, xquota_pool_total,
-                                        POOL_MAIN, POOL_OPEN)
+                                        xcode_unused_of, xquota_pool_used,
+                                        xquota_pool_total, POOL_MAIN, POOL_OPEN)
 from bot.modules.panel.xserver_panel import _enc, _dec, _xc_of
 
 POOL_LABEL = {POOL_MAIN: '主服用户', POOL_OPEN: '开放池'}
@@ -68,6 +68,12 @@ def _parse_sid_tail(command):
 def _to_key(raw: str):
     return int(raw) if raw.lstrip('-').isdigit() else raw
 
+async def _command_reply(msg, text: str, buttons=None):
+    """先回复管理命令，再删除原命令，避免回复目标失效。"""
+    result = await sendMessage(msg, text, buttons=buttons)
+    await deleteMessage(msg)
+    return result
+
 
 # ---------------- 面板主页 ----------------
 
@@ -81,10 +87,13 @@ def _admin_home_text(xc, q) -> str:
                        f"· 名额·开放池   | {po_u}/{po_t}（剩 {max(0, po_t - po_u)}）\n")
     else:
         quota_block = "· 名额 | 未初始化\n"
+    code_block = (f"· 未使用资格码 | {xcode_unused_of(xc.id, 'reg')}\n"
+                  f"· 未使用续期码 | {xcode_unused_of(xc.id, 'renew')}\n")
     return (f"**▎🧪 {xc.name} · 管理**\n\n"
             f"· 地址 | `{xc.url}`\n"
             f"· 线路 | {xc.line}\n"
             f"{quota_block}"
+            f"{code_block}"
             f"· 有效期 | {xc.expire_days} 天 · 前缀 `{xc.name_prefix}` · 并发 {xc.limit}\n"
             f"· 复开策略 | {'🔁 允许再次开号' if xc.allow_reopen else '🎫 每人仅限一次（防蹲坑）'}\n\n"
             f"**开号通道**\n"
@@ -315,7 +324,8 @@ async def xs_quota_add_minus(_, call):
         return await callAnswer(call,
                                 f'⚠️ {POOL_LABEL[pool]}总名额不得低于已用 '
                                 f'{xquota_pool_used(q, pool)}', True)
-    xquota_set_total(sid, new_total, pool)
+    if not xquota_set_total(sid, new_total, pool):
+        return await callAnswer(call, '❌ 名额更新失败，请检查数据库', True)
     await _admin_home_render(_, call, sid)
 
 
@@ -341,7 +351,8 @@ async def xs_quota_set(_, call):
         return await sendMessage(call,
                                  f'⚠️ {POOL_LABEL[pool]}当前已用 {xquota_pool_used(q, pool)}，'
                                  f'总名额不得低于此数', timer=60)
-    xquota_set_total(sid, total, pool)
+    if not xquota_set_total(sid, total, pool):
+        return await callAnswer(call, '❌ 名额更新失败，请检查数据库', True)
     await _admin_home_render(_, call, sid)
 
 
@@ -350,8 +361,10 @@ async def xs_quota_set(_, call):
 @bot.on_callback_query(filters.regex('^xsa:tc:') & admins_on_filter)
 async def xs_toggle_channel(_, call):
     _, _, sid_hex, chan = call.data.split(':')
+    if chan not in ('main_user', 'whitelist', 'points'):
+        return await callAnswer(call, '⚠️ 未知开号通道', True)
     sid = _dec(sid_hex)
-    xc = _xc_of(sid)
+    xc = await _xc_any(sid)
     if xc is None:
         return await callAnswer(call, '⚠️ 服务器不存在', True)
     ch = xc.channels
@@ -376,7 +389,7 @@ async def xs_points_cost(_, call):
         assert cost > 0
     except (ValueError, AssertionError):
         return await sendMessage(call, '⚠️ 请发送正整数', timer=60)
-    xc = _xc_of(sid)
+    xc = await _xc_any(sid)
     if xc is None:
         return await callAnswer(call, '⚠️ 服务器不存在', True)
     xc.channels.points_cost = cost
@@ -439,33 +452,33 @@ async def xs_create_code_ask(_, call):
 
 @bot.on_message(filters.command('xscrn', prefixes) & admins_on_filter & filters.private)
 async def xs_cmd_renew_code(_, msg):
-    await deleteMessage(msg)
     args, sid = _parse_sid_tail(msg.command)
     if len(args) != 2:
-        return await sendMessage(msg, '用法：`/xscrn <数量> <天数> [server_id]`', timer=60)
+        return await _command_reply(msg, '用法：`/xscrn <数量> <天数> [server_id]`')
     try:
         count, days = int(args[0]), int(args[1])
         assert 1 <= count <= 50 and 1 <= days <= 3650
     except (ValueError, AssertionError):
-        return await sendMessage(msg, '⚠️ 数量1-50、天数1-3650', timer=60)
+        return await _command_reply(msg, '⚠️ 数量1-50、天数1-3650')
     if _xc_of(sid) is None:
-        return await sendMessage(msg, '⚠️ 无启用的测试服', timer=60)
-    await _emit_codes(msg, sid, count, days, 'renew')
+        return await _command_reply(msg, '⚠️ 无启用的测试服')
+    result = await _emit_codes(msg, sid, count, days, 'renew')
+    await deleteMessage(msg)
+    return result
 
 
 # ---------------- 管理命令：查询/发资格/续期/删除 ----------------
 
 @bot.on_message(filters.command('xsin', prefixes) & admins_on_filter)
 async def xs_admin_info(_, msg):
-    await deleteMessage(msg)
     args, sid = _parse_sid_tail(msg.command)
     if len(args) != 1:
-        return await sendMessage(msg, '用法：`/xsin <tg|用户名> [server_id]`', timer=60)
+        return await _command_reply(msg, '用法：`/xsin <tg|用户名> [server_id]`')
     if _xc_of(sid) is None:
-        return await sendMessage(msg, '⚠️ 无启用的测试服', timer=60)
+        return await _command_reply(msg, '⚠️ 无启用的测试服')
     a = xacc_get_any(sid, _to_key(args[0]))
     if a is None:
-        return await sendMessage(msg, f'❌ `{sid}` 未找到账号 `{args[0]}`', timer=60)
+        return await _command_reply(msg, f'❌ `{sid}` 未找到账号 `{args[0]}`')
     xc = _xc_of(sid)
     q = xquota_get(sid)
     quota_line = ''
@@ -480,27 +493,27 @@ async def xs_admin_info(_, msg):
             f"· 创建 | {a.cr} · 到期 | {a.ex}\n"
             f"· 占用池 | `{POOL_LABEL.get(a.pool or POOL_MAIN, a.pool)}`\n"
             f"{quota_line}")
-    await sendMessage(msg, text, buttons=ikb([[('🔙 主页', 'xsa:m')]]))
+    return await _command_reply(msg, text, buttons=ikb([[('🔙 主页', 'xsa:m')]]))
 
 
 @bot.on_message(filters.command('xsgr', prefixes) & admins_on_filter & filters.private)
 async def xs_admin_grant(_, msg):
-    await deleteMessage(msg)
     args, sid = _parse_sid_tail(msg.command)
     if len(args) != 2:
-        return await sendMessage(msg, '用法：`/xsgr <tg> <天数> [server_id]`', timer=60)
+        return await _command_reply(msg, '用法：`/xsgr <tg> <天数> [server_id]`')
     try:
         tg, days = int(args[0]), int(args[1])
         assert days > 0
     except (ValueError, AssertionError):
-        return await sendMessage(msg, '⚠️ tg/天数须为正整数', timer=60)
+        return await _command_reply(msg, '⚠️ tg/天数须为正整数')
     if _xc_of(sid) is None:
-        return await sendMessage(msg, f'⚠️ 测试服 `{sid}` 未启用', timer=60)
+        return await _command_reply(msg, f'⚠️ 测试服 `{sid}` 未启用')
     if sql_get_emby(tg) is None and xacc_get(sid, tg) is None:
-        return await sendMessage(msg, '⚠️ 该 TG 未 /start 过 bot，无法发放资格', timer=60)
-    xacc_grant(sid, tg, days)
+        return await _command_reply(msg, '⚠️ 该 TG 未 /start 过 bot，无法发放资格')
+    if not xacc_grant(sid, tg, days):
+        return await _command_reply(msg, '❌ 资格写入数据库失败，请稍后重试')
     LOGGER.info(f'【xserver管理】{msg.from_user.id} 给 {tg} 在 {sid} 发放资格 {days} 天')
-    await sendMessage(msg, f'✅ 已给 `{tg}` 在 `{sid}` 发放开号资格 **{days}** 天')
+    await _command_reply(msg, f'✅ 已给 `{tg}` 在 `{sid}` 发放开号资格 **{days}** 天')
     try:
         await bot.send_message(tg, f'🎉 管理员发放了测试服 `{sid}` 开号资格 {days} 天，'
                                    f'前往【🧪 测试服开号】使用')
@@ -510,64 +523,70 @@ async def xs_admin_grant(_, msg):
 
 @bot.on_message(filters.command('xsext', prefixes) & admins_on_filter & filters.private)
 async def xs_admin_extend(_, msg):
-    await deleteMessage(msg)
     args, sid = _parse_sid_tail(msg.command)
     if len(args) != 2:
-        return await sendMessage(msg, '用法：`/xsext <用户名|tg> <天数> [server_id]`', timer=60)
+        return await _command_reply(msg, '用法：`/xsext <用户名|tg> <天数> [server_id]`')
     try:
         days = int(args[1])
         assert days != 0
     except (ValueError, AssertionError):
-        return await sendMessage(msg, '⚠️ 天数须为非零整数', timer=60)
+        return await _command_reply(msg, '⚠️ 天数须为非零整数')
     a = xacc_get_any(sid, _to_key(args[0]))
     if a is None or not a.embyid:
-        return await sendMessage(msg, f'❌ `{sid}` 未找到已开通账号 `{args[0]}`', timer=60)
+        return await _command_reply(msg, f'❌ `{sid}` 未找到已开通账号 `{args[0]}`')
+    svc = get_service(sid)
+    if a.lv != 'b':
+        if svc is None:
+            return await _command_reply(msg, '❌ 服务器未开放，无法解封并续期')
+        if not await svc.emby_change_policy(a.embyid, disable=False):
+            return await _command_reply(msg, '❌ 远端解封失败，续期已中止')
     base = a.ex if (a.ex and a.ex > datetime.now()) else datetime.now()
     new_ex = base + timedelta(days=days)
-    xacc_update(sid, a.tg, ex=new_ex, lv='b')
-    svc = get_service(sid)
-    if svc and a.lv != 'b':
-        # 封印号续期即解封
-        await svc.emby_change_policy(a.embyid, disable=False)
+    if not xacc_update(sid, a.tg, ex=new_ex, lv='b'):
+        if a.lv != 'b' and svc:
+            await svc.emby_change_policy(a.embyid, disable=True)
+        return await _command_reply(msg, '❌ 到期时间写入数据库失败，续期已中止')
     LOGGER.info(f'【xserver管理】{msg.from_user.id} 续期 {sid}/{a.name} +{days}天 -> {new_ex}')
-    await sendMessage(msg, f'✅ `{a.name}` 已{"续期" if days > 0 else "调整"} {days} 天\n'
-                          f'新到期：{new_ex}')
+    await _command_reply(msg, f'✅ `{a.name}` 已{"续期" if days > 0 else "调整"} {days} 天\n'
+                              f'新到期：{new_ex}')
     try:
         await bot.send_message(a.tg, f'🧪 你的测试服 `{a.name}` 到期时间已调整为 {new_ex}')
-    except Exception:
-        pass
+    except Exception as e:
+        LOGGER.warning(f'【xserver管理】续期通知失败 {a.tg}: {e}')
 
 
 @bot.on_message(filters.command('xsrm', prefixes) & admins_on_filter & filters.private)
 async def xs_admin_remove(_, msg):
-    await deleteMessage(msg)
     args, sid = _parse_sid_tail(msg.command)
     if len(args) != 1:
-        return await sendMessage(msg, '用法：`/xsrm <用户名|tg> [server_id]`', timer=60)
+        return await _command_reply(msg, '用法：`/xsrm <用户名|tg> [server_id]`')
     a = xacc_get_any(sid, _to_key(args[0]))
     if a is None:
-        return await sendMessage(msg, f'❌ `{sid}` 未找到 `{args[0]}`', timer=60)
+        return await _command_reply(msg, f'❌ `{sid}` 未找到 `{args[0]}`')
     xc = _xc_of(sid)
     svc = get_service(sid)
-    if svc and a.embyid:
+    if a.embyid:
+        if svc is None:
+            return await _command_reply(msg, '❌ 服务器未开放，已中止删除，避免遗留远端账号')
         deleted = await svc.x_delete(a.embyid)
         if not deleted:
             ok_u, uinfo = await svc.user(a.embyid)
             gone = (not ok_u) and isinstance(uinfo, dict) and '资源不存在' in uinfo.get('error', '')
             if not gone:
-                return await sendMessage(msg, '❌ 远端删除失败（服务器不通？），已中止', timer=60)
-    xacc_delete(sid, a.tg)
+                return await _command_reply(msg, '❌ 远端删除失败（服务器不通？），已中止')
+    if not xacc_delete(sid, a.tg):
+        return await _command_reply(msg, '❌ 本地记录删除失败，请重试')
     pool = a.pool or POOL_MAIN
-    if a.embyid:
-        xquota_give(sid, pool)
+    if a.embyid and not xquota_give(sid, pool):
+        LOGGER.warning(f'【xserver管理】删除 {sid}/{a.name} 后名额计数未减少：{pool}')
     name = a.name or str(a.tg)
     LOGGER.info(f'【xserver管理】{msg.from_user.id} 删除 {sid}/{name}，名额已退回{POOL_LABEL[pool]}')
-    await sendMessage(msg, f'✅ 已删除 `{name}`（{xc.name if xc else sid}），'
-                          f'名额已退回{POOL_LABEL[pool]}')
+    await _command_reply(msg, f'✅ 已删除 `{name}`（{xc.name if xc else sid}），'
+                              f'名额已退回{POOL_LABEL[pool]}')
     try:
         await bot.send_message(a.tg, f'🧪 管理员删除了你的测试服账号 `{name}`，名额已释放')
-    except Exception:
-        pass
+    except Exception as e:
+        LOGGER.warning(f'【xserver管理】删除通知失败 {a.tg}: {e}')
 
 
 # ---------------- 账号列表（分页） ----------------
@@ -618,6 +637,8 @@ async def xs_admin_user(_, call):
     text = (f"**▎🧪 {xc.name if xc else sid} · `{a.tg}`**\n"
             f"· ID | `{a.embyid or '待开号'}`\n"
             f"· 用户名 | `{a.name or '-'}`\n"
+            f"· 登录密码 | `{a.pwd or '-'}`\n"
+            f"· 安全密码 | `{a.pwd2 or '-'}`\n"
             f"· 状态 `{a.lv}` · 资格 {int(a.us or 0)} 天\n"
             f"· 到期 | {a.ex or '-'}\n"
             f"· 占用池 | `{POOL_LABEL.get(a.pool or POOL_MAIN, a.pool)}`")
@@ -642,11 +663,13 @@ async def xs_admin_disable(_, call):
     svc = get_service(sid)
     if svc is None:
         return await callAnswer(call, '⚠️ 服务器未开放', True)
-    if await svc.emby_change_policy(a.embyid, disable=True):
-        xacc_update(sid, tg, lv='c')
-        await callAnswer(call, '🔒 已封印')
-    else:
-        await callAnswer(call, '❌ 远端策略修改失败', True)
+    if not await svc.emby_change_policy(a.embyid, disable=True):
+        return await callAnswer(call, '❌ 远端策略修改失败', True)
+    if not xacc_update(sid, tg, lv='c'):
+        await svc.emby_change_policy(a.embyid, disable=False)
+        return await callAnswer(call, '❌ 本地状态写入失败，已回滚远端策略', True)
+    await callAnswer(call, '🔒 已封印')
+    await xs_admin_user(_, call)
 
 
 @bot.on_callback_query(filters.regex('^xsa:oe:') & admins_on_filter)
@@ -659,14 +682,35 @@ async def xs_admin_enable(_, call):
     svc = get_service(sid)
     if svc is None:
         return await callAnswer(call, '⚠️ 服务器未开放', True)
-    if await svc.emby_change_policy(a.embyid, disable=False):
-        xacc_update(sid, tg, lv='b')
-        await callAnswer(call, '🔓 已解封')
-    else:
-        await callAnswer(call, '❌ 远端策略修改失败', True)
+    if not await svc.emby_change_policy(a.embyid, disable=False):
+        return await callAnswer(call, '❌ 远端策略修改失败', True)
+    if not xacc_update(sid, tg, lv='b'):
+        await svc.emby_change_policy(a.embyid, disable=True)
+        return await callAnswer(call, '❌ 本地状态写入失败，已回滚远端策略', True)
+    await callAnswer(call, '🔓 已解封')
+    await xs_admin_user(_, call)
 
 
 @bot.on_callback_query(filters.regex('^xsa:ox:') & admins_on_filter)
+async def xs_admin_delete_ask(_, call):
+    _, _, sid_hex, tg_s = call.data.split(':')
+    sid, tg = _dec(sid_hex), int(tg_s)
+    a = xacc_get(sid, tg)
+    if not a or not a.embyid:
+        return await callAnswer(call, '❌ 无有效账号', True)
+    await callAnswer(call, '⚠️ 请确认删除')
+    await editMessage(
+        call,
+        f'**确认删除测试服账号？**\n\n用户名：`{a.name}`\nTG：`{a.tg}`\n'
+        '远端账号、本地记录及所占名额都会被清理。',
+        buttons=ikb([
+            [('✅ 确认删除', f'xsa:oxc:{sid_hex}:{tg}')],
+            [('🔙 取消', f'xsa:u:{sid_hex}:{tg}')],
+        ]),
+    )
+
+
+@bot.on_callback_query(filters.regex('^xsa:oxc:') & admins_on_filter)
 async def xs_admin_delete_cb(_, call):
     _, _, sid_hex, tg_s = call.data.split(':')
     sid, tg = _dec(sid_hex), int(tg_s)
@@ -682,8 +726,10 @@ async def xs_admin_delete_cb(_, call):
         gone = (not ok_u) and isinstance(uinfo, dict) and '资源不存在' in uinfo.get('error', '')
         if not gone:
             return await callAnswer(call, '❌ 远端删除失败，已中止', True)
-    xacc_delete(sid, tg)
-    xquota_give(sid, a.pool or POOL_MAIN)
+    if not xacc_delete(sid, tg):
+        return await callAnswer(call, '❌ 本地记录删除失败，请重试', True)
+    if not xquota_give(sid, a.pool or POOL_MAIN):
+        LOGGER.warning(f'【xserver管理】面板删除 {sid}/{a.name} 后名额计数未减少')
     LOGGER.info(f'【xserver管理】{call.from_user.id} 面板删除 {sid}/{a.name}')
     await editMessage(call, f'✅ 已删除 `{a.name}`，名额已退回原池',
                       buttons=ikb([[('📋 列表', f'xsa:li:{sid_hex}:0')]]))
