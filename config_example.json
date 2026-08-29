@@ -138,6 +138,7 @@
       "line": "http://test.example.com:8096",
       "expire_days": 15,
       "all_user": 50,
+      "all_user_open": 20,
       "limit": 2,
       "block_libs": [
         "nsfw"

@@ -5,6 +5,11 @@ xserver（测试服等旁路扩展服务器）用户面板。
 - 账号只读写 xserver_account / xserver_quota / xserver_code；
 - 唯一触碰主服数据的地方是「积分通道扣 emby.iv」（复用现有字段，不改结构）。
 
+双名额池：
+- POOL_MAIN（config.all_user）：开号时主服已有账号的用户；
+- POOL_OPEN（config.all_user_open）：开号时主服没有账号的纯测试用户。
+账号行记录 pool，注销/到期/管理删除按原池回收。
+
 回调格式 xs:<hex(server_id)>:<action>：
 server_id 做 utf-8 hex 编码，数据仅含 0-9a-f 与前缀，不会命中任何既有
 非锚定 handler 正则（'server'/'create'/'members'/'delme' 等均含非十六进制字符）。
@@ -24,7 +29,9 @@ from bot.func_helper.xserver import get_service, enabled_servers
 from bot.schemas import Xserver
 from bot.sql_helper.sql_emby import sql_get_emby, sql_update_emby, Emby
 from bot.sql_helper.sql_xserver import (xacc_get, xacc_get_any, xacc_add, xacc_update,
-                                        xacc_delete, xquota_get, xquota_take, xquota_give)
+                                        xacc_delete, xquota_get, xquota_take, xquota_give,
+                                        xquota_pool_used, xquota_pool_total,
+                                        POOL_MAIN, POOL_OPEN)
 
 # 用户名禁用字符：空白 + markdown/Emby 敏感符号
 _BAD_CHARS = re.compile(r'[\s~`*_\[\]()#+\\|<>:/?@&%$^{}=";,\']')
@@ -46,6 +53,11 @@ def _xc_of(sid: str):
         if xc.id == sid and xc.enable:
             return xc
     return None
+
+
+def _pool_of(main) -> str:
+    """按开号时主服状态选池：有账号→main池，无账号→open池"""
+    return POOL_MAIN if (main is not None and main.embyid) else POOL_OPEN
 
 
 def xserver_available() -> bool:
@@ -92,6 +104,21 @@ def _fmt_cost(kind: str, cost: int) -> str:
     return f' · {cost}{sakura_b}'
 
 
+def _quota_lines(q, pool: str) -> str:
+    if not q:
+        return '· 名额 | 未初始化'
+    pm_u, pm_t = xquota_pool_used(q, POOL_MAIN), xquota_pool_total(q, POOL_MAIN)
+    po_u, po_t = xquota_pool_used(q, POOL_OPEN), xquota_pool_total(q, POOL_OPEN)
+    mark = ' ←你的池'
+    main_line = f"· 名额·主服用户 | {pm_u}/{pm_t}（剩 {max(0, pm_t - pm_u)}）"
+    if pool == POOL_MAIN:
+        main_line += mark
+    open_line = f"· 名额·开放池(无主服号) | {po_u}/{po_t}（剩 {max(0, po_t - po_u)}）"
+    if pool == POOL_OPEN:
+        open_line += mark
+    return f"{main_line}\n{open_line}"
+
+
 # ---------------- 面板入口 & 主页 ----------------
 
 @bot.on_callback_query(filters.regex('^xs:m') & user_in_group_on_filter)
@@ -126,16 +153,15 @@ async def xs_home_show(_, call, sid: str):
     main = sql_get_emby(tg)
     a = xacc_get(sid, tg)
     q = xquota_get(sid)
+    pool = _pool_of(main)
 
     acc_line = '· 未开通'
     if a and a.embyid:
         acc_line = f" · `{a.name}` | 状态 {a.lv} | 到期 `{a.ex}`"
-    quota_line = (f"· 名额 | {q.used}/{q.total}（剩余 {max(0, q.total - q.used)}）"
-                  if q else '· 名额 | 未初始化')
 
     text = (f"**▎🧪 {xc.name}面板**\n\n"
             f"· 我的账号{acc_line}\n"
-            f"{quota_line}\n"
+            f"{_quota_lines(q, pool)}\n"
             f"· 线路 |\n{xc.line}\n\n"
             f"**开号通道**\n{_channel_text(xc, main)}\n\n"
             f"_用户名统一加前缀 `{xc.name_prefix}`；到期自动删除并回收名额_")
@@ -143,7 +169,7 @@ async def xs_home_show(_, call, sid: str):
     buttons = []
     kind, cost = _eligibility(xc, main, a)
     has_account = bool(a and a.embyid)
-    slot_left = bool(q and q.used < q.total)
+    slot_left = bool(q and xquota_pool_used(q, pool) < xquota_pool_total(q, pool))
     if has_account:
         buttons.append([('🗑️ 注销测试号', f'xs:d:{_enc(sid)}')])
         if a.lv != 'b':
@@ -154,7 +180,7 @@ async def xs_home_show(_, call, sid: str):
                 buttons.append([(f'🚀 一键开号{_fmt_cost(kind, cost)}', f'xs:q:{_enc(sid)}')])
             buttons.append([(f'📝 单独开号{_fmt_cost(kind, cost)}', f'xs:c:{_enc(sid)}')])
         else:
-            buttons.append([('🚫 名额已满，稍后再试', f'xs:h:{_enc(sid)}')])
+            buttons.append([('🚫 你所在名额池已满，稍后再试', f'xs:h:{_enc(sid)}')])
     grant_days = int(a.us or 0) if (a and not a.embyid) else 0
     if grant_days:
         buttons.append([(f'🎫 持有开号资格 {grant_days} 天', f'xs:h:{_enc(sid)}')])
@@ -165,8 +191,9 @@ async def xs_home_show(_, call, sid: str):
 # ---------------- 开号公共逻辑 ----------------
 
 async def _rollback(tg: int, sid: str, cost: int, paid_iv: bool,
-                    embyid_created: str = None, restore_us: int = None):
-    """失败回滚链：远端半成品 → 积分/资格 → 名额"""
+                    embyid_created: str = None, restore_us: int = None,
+                    pool: str = POOL_MAIN):
+    """失败回滚链：远端半成品 → 积分/资格 → 名额（按占用的原池）"""
     if embyid_created:
         svc = get_service(sid)
         if svc:
@@ -177,15 +204,15 @@ async def _rollback(tg: int, sid: str, cost: int, paid_iv: bool,
             sql_update_emby(Emby.tg == tg, iv=int(main.iv or 0) + cost)
     if restore_us is not None:
         xacc_update(sid, tg, us=restore_us)
-    xquota_give(sid)
+    xquota_give(sid, pool)
 
 
-def _write_account(sid: str, tg: int, pending, eid, name, pwd, pwd2, ex) -> bool:
-    """把资格待用行转正，或新建账号行"""
+def _write_account(sid: str, tg: int, pending, eid, name, pwd, pwd2, ex, pool: str) -> bool:
+    """把资格待用行转正，或新建账号行；均记录占用的名额池"""
     if pending is not None:
         return xacc_update(sid, tg, embyid=eid, name=name, pwd=pwd, pwd2=pwd2,
-                           lv='b', cr=datetime.now(), ex=ex, us=0)
-    return xacc_add(sid, tg, eid, name, pwd, pwd2, ex)
+                           lv='b', cr=datetime.now(), ex=ex, us=0, pool=pool)
+    return xacc_add(sid, tg, eid, name, pwd, pwd2, ex, pool=pool)
 
 
 def _success_text(xc: Xserver, name, pwd, pwd2, ex, copied: bool) -> str:
@@ -201,7 +228,7 @@ def _success_text(xc: Xserver, name, pwd, pwd2, ex, copied: bool) -> str:
 async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: str,
                            copied: bool):
     """
-    占名额 → 判定通道/扣资源 → 建号（或收编远端残留同名号）→ 落库。
+    占名额（按主服状态选池）→ 判定通道/扣资源 → 建号（或收编远端残留同名号）→ 落库。
     调用方需已持有该用户的 user_lock。
     :param want_pwd: None 则随机生成
     :return: (ok, 成功文案或失败原因)
@@ -225,8 +252,10 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
     if kind == 'points' and int(main.iv or 0) < cost:
         return False, f'💦 {sakura_b}不足，开号需要 {cost}{sakura_b}，当前 {int(main.iv or 0)}'
 
-    if not xquota_take(sid):
-        return False, f'**🚫 很抱歉，{xc.name}名额已满。**'
+    pool = _pool_of(main)
+    pool_name = '主服用户' if pool == POOL_MAIN else '开放池'
+    if not xquota_take(sid, pool):
+        return False, f'**🚫 很抱歉，{xc.name}的{pool_name}名额已满。**'
 
     # 资格通道：有效期=资格天数并即时消耗；其他通道：服务器默认天数
     days = int(a.us or 0) if kind == 'grant' else xc.expire_days
@@ -235,7 +264,7 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
     paid_iv = False
     if kind == 'points':
         if not sql_update_emby(Emby.tg == tg, iv=int(main.iv or 0) - cost):
-            xquota_give(sid)
+            xquota_give(sid, pool)
             return False, '❌ 扣分失败，请稍后重试。'
         paid_iv = True
     if kind == 'grant':
@@ -247,7 +276,7 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
     # 名字被其他 bot 用户占用则拒绝（防收编他人账号）
     other = xacc_get_any(sid, want_name)
     if other is not None and other.tg != tg:
-        await _rollback(tg, sid, cost, paid_iv, restore_us=restore_us)
+        await _rollback(tg, sid, cost, paid_iv, restore_us=restore_us, pool=pool)
         return False, '❌ 该用户名已被占用，请换一个'
 
     ex = datetime.now() + timedelta(days=days)
@@ -258,26 +287,27 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
     if ok_u and isinstance(uinfo, dict) and uinfo.get("Id"):
         eid = str(uinfo["Id"])
         if not await svc.emby_reset(eid, want_pwd):
-            await _rollback(tg, sid, cost, paid_iv, restore_us=restore_us)
+            await _rollback(tg, sid, cost, paid_iv, restore_us=restore_us, pool=pool)
             return False, '❌ 收编同名残留账号失败，请联系管理员'
         await svc.emby_change_policy(eid, disable=False)
-        if not _write_account(sid, tg, pending, eid, want_name, want_pwd, want_pwd2, ex):
-            await _rollback(tg, sid, cost, paid_iv, restore_us=restore_us)
+        if not _write_account(sid, tg, pending, eid, want_name, want_pwd, want_pwd2, ex, pool):
+            await _rollback(tg, sid, cost, paid_iv, restore_us=restore_us, pool=pool)
             return False, '❌ 数据库写入失败，请稍后重试。'
-        LOGGER.info(f'【xserver】开号(收编) {xc.name} {want_name} -> tg={tg}')
+        LOGGER.info(f'【xserver】开号(收编/{pool}) {xc.name} {want_name} -> tg={tg}')
         return True, _success_text(xc, want_name, want_pwd, want_pwd2, ex, copied=False)
 
     result = await svc.emby_create_x(name=want_name, days=days, password=want_pwd)
     if not result:
-        await _rollback(tg, sid, cost, paid_iv, restore_us=restore_us)
+        await _rollback(tg, sid, cost, paid_iv, restore_us=restore_us, pool=pool)
         return False, ('**- ❎ 已有此账户名，请重新输入\n'
                        '- ❔ 或检查用户名有无特殊字符\n'
                        f'- ❔ 或 {xc.name} 服务器连接不通，会话已结束！**')
     eid, pwd, ex = result
-    if not _write_account(sid, tg, pending, eid, want_name, pwd, want_pwd2, ex):
-        await _rollback(tg, sid, cost, paid_iv, embyid_created=eid, restore_us=restore_us)
+    if not _write_account(sid, tg, pending, eid, want_name, pwd, want_pwd2, ex, pool):
+        await _rollback(tg, sid, cost, paid_iv, embyid_created=eid,
+                        restore_us=restore_us, pool=pool)
         return False, '❌ 数据库写入失败，请稍后重试。'
-    LOGGER.info(f'【xserver】开号 {xc.name} {want_name} -> tg={tg}')
+    LOGGER.info(f'【xserver】开号({pool}) {xc.name} {want_name} -> tg={tg}')
     return True, _success_text(xc, want_name, pwd, want_pwd2, ex, copied)
 
 
@@ -357,7 +387,6 @@ async def xs_del_confirm(_, call):
         a = xacc_get(sid, tg)
         if not a or not a.embyid:
             return await callAnswer(call, '💦 账号已不存在', True)
-        xc = _xc_of(sid)
         svc = get_service(sid)
         if svc is None:
             return await callAnswer(call, '⚠️ 服务器未开放，无法注销', True)
@@ -371,7 +400,7 @@ async def xs_del_confirm(_, call):
                 return await editMessage(call, '❌ 注销失败：无法连接服务器，请稍后重试或联系管理员。',
                                          buttons=ikb([[('🔙 返回', f'xs:h:{_enc(sid)}')]]))
         xacc_delete(sid, tg)
-        xquota_give(sid)
+        xquota_give(sid, a.pool or POOL_MAIN)
         name = a.name
     await editMessage(call, f"**✅ 已注销 `{name}`，名额已回收。**",
                       buttons=ikb([[('🔙 返回', f'xs:h:{_enc(sid)}')]]))

@@ -2,13 +2,15 @@
 xserver 到期检测：到期 = 删除远端账号 + 清除本地记录 + 回收名额（用户确认的语义）。
 
 由 schedall.xserver_check_ex 控制，每小时跑一次；
+名额回收按账号行记录的池（main/open）退回，保证双池账目一致。
 数据访问全部走 bot.sql_helper.sql_xserver（可被测试接管 Session）。
 """
 from datetime import datetime
 
 from bot import bot, LOGGER
 from bot.func_helper.xserver import enabled_servers, get_service
-from bot.sql_helper.sql_xserver import (xacc_delete, xacc_expired_rows, xquota_give)
+from bot.sql_helper.sql_xserver import (xacc_delete, xacc_expired_rows, xquota_give,
+                                        POOL_MAIN)
 
 
 async def check_xserver_expired():
@@ -36,9 +38,9 @@ async def check_xserver_expired():
                 LOGGER.warning(f'【xserver到期检测】{xc.id} 删除失败，保留待重试 tg={a.tg}')
                 continue
             if xacc_delete(xc.id, a.tg):
-                # 只有真实开过号的行才回收名额（资格待用行 embyid 为空）
+                # 只有真实开过号的行才回收名额，且退回其占用的原池
                 if a.embyid:
-                    xquota_give(xc.id)
+                    xquota_give(xc.id, a.pool or POOL_MAIN)
                 LOGGER.info(f'【xserver到期检测】{xc.name} 到期删除 [{a.name}](tg={a.tg}) Done！')
                 try:
                     await bot.send_message(a.tg, f'🧪 你的 {xc.name} 测试账号 `{a.name}` 已到期删除，'

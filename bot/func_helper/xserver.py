@@ -26,9 +26,9 @@ class XserverService(Embyservice):
         self.xc = xc
 
     def ensure_ready(self):
-        """首次使用时把 config.all_user 种子写入 quota 表（幂等）"""
+        """首次使用时把 config 的双池名额种子写入 quota 表（幂等）"""
         from bot.sql_helper.sql_xserver import xquota_ensure
-        xquota_ensure(self.server_id, self.xc.all_user)
+        xquota_ensure(self.server_id, self.xc.all_user, self.xc.all_user_open)
 
     async def emby_create_x(self, name: str, days: int,
                             password: Optional[str] = None) -> Union[Tuple[str, str, datetime], bool]:

@@ -54,9 +54,25 @@ class XserverDataTests(unittest.TestCase):
         fresh_db(NS)
 
     def test_quota_seed_is_idempotent(self):
-        self.assertTrue(sx.xquota_ensure("test", total_seed=2))
-        sx.xquota_ensure("test", total_seed=99)
-        self.assertEqual(sx.xquota_get("test").total, 2)
+        self.assertTrue(sx.xquota_ensure("test", total_seed=2, open_seed=9))
+        sx.xquota_ensure("test", total_seed=99, open_seed=99)
+        q = sx.xquota_get("test")
+        self.assertEqual(q.total, 2)
+        self.assertEqual(q.total_open, 9)
+
+    def test_dual_pools_independent(self):
+        """main 池满不影响 open 池；回收各回各池"""
+        sx.xquota_ensure("t2", 1, 1)
+        self.assertTrue(sx.xquota_take("t2", sx.POOL_MAIN))
+        self.assertFalse(sx.xquota_take("t2", sx.POOL_MAIN))   # main 满
+        self.assertTrue(sx.xquota_take("t2", sx.POOL_OPEN))    # open 不受影响
+        self.assertFalse(sx.xquota_take("t2", sx.POOL_OPEN))
+        sx.xquota_give("t2", sx.POOL_MAIN)
+        q = sx.xquota_get("t2")
+        self.assertEqual((q.used, q.used_open), (0, 1))  # main退回0，open占着1
+        self.assertTrue(sx.xquota_set_total("t2", 3, sx.POOL_OPEN))
+        self.assertEqual(sx.xquota_get("t2").total_open, 3)
+        self.assertEqual(sx.xquota_get("t2").total, 1)  # main 不受波及
 
     def test_quota_atomic_take_and_release(self):
         sx.xquota_ensure("test", 2)

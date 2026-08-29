@@ -165,8 +165,11 @@ class Xserver(BaseModel):
     line: str = ""
     # 独立有效天数
     expire_days: int = 15
-    # 初始名额（首次启动种子写入 xserver_quota.total，之后以表内值为准）
+    # 初始名额种子（首次启动写入 xserver_quota，之后以表内值为准）
+    # all_user = 主服已有账号用户的名额池
     all_user: int = 50
+    # all_user_open = 主服没有账号的用户（纯测试用户）的名额池
+    all_user_open: int = 20
     # 创建账号时同时限制的同时连接数
     limit: int = 2
     # 测试服上需要隐藏的媒体库名称（独立于主服 emby_block）

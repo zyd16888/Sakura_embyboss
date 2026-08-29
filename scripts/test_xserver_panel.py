@@ -94,12 +94,13 @@ class FakeService:
         return False, {"error": "资源不存在"}
 
 
-def setup_server(total=10, **over):
+def setup_server(total=10, open_total=None, **over):
     fresh_db(NS)
     xc = Xserver(id="test", name="测试服", url="http://t:8096", api="K",
-                 line="http://t.line", all_user=total, **over)
+                 line="http://t.line", all_user=total,
+                 all_user_open=total if open_total is None else open_total, **over)
     NS["cfg"].xservers = [xc]
-    sx.xquota_ensure("test", total)
+    sx.xquota_ensure("test", total, xc.all_user_open)
     return xc
 
 
@@ -170,25 +171,47 @@ class OpenFlowTests(unittest.TestCase):
 
     def test_points_deduct_and_full_rollback(self):
         setup_server()
-        add_main(222, name="bob", iv=250, embyid=None, lv='d')  # 无主服号 → 积分通道
+        add_main(222, name="bob", iv=250, embyid=None, lv='d')  # 无主服号 → 积分通道+open池
         svc = FakeService()
         patch_service(svc)
         ok, out = open_account(FakeCall(222), "test", "t_custom", None, "1234", copied=False)
         self.assertTrue(ok, out)
         self.assertEqual(se.sql_get_emby(222).iv, 150)   # 扣 100
-        self.assertEqual(sx.xquota_get("test").used, 1)
+        q = sx.xquota_get("test")
+        self.assertEqual((q.used, q.used_open), (0, 1))  # 占的是 open 池
+        self.assertEqual(sx.xacc_get("test", 222).pool, sx.POOL_OPEN)
 
-        # 注销：退名额、不退积分
+        # 注销：退 open 池名额、不退积分
         run(xp.xs_del_confirm(None, FakeCall(222, "xs:dc:" + xp._enc("test"))))
-        self.assertEqual(sx.xquota_get("test").used, 0)
+        q = sx.xquota_get("test")
+        self.assertEqual((q.used, q.used_open), (0, 0))
         self.assertEqual(se.sql_get_emby(222).iv, 150)
 
-        # 再次开号但远端建号失败 → 积分/名额回滚
+        # 再次开号但远端建号失败 → 积分/open池名额回滚
         patch_service(FakeService(create_ok=False))
         ok2, out2 = open_account(FakeCall(222), "test", "t_other", None, "1234", copied=False)
         self.assertFalse(ok2)
         self.assertEqual(se.sql_get_emby(222).iv, 150)
-        self.assertEqual(sx.xquota_get("test").used, 0)
+        q = sx.xquota_get("test")
+        self.assertEqual((q.used, q.used_open), (0, 0))
+
+    def test_pool_isolation_main_full_open_usable(self):
+        """main 池满：主服用户被拒，但无主服号用户仍可占 open 池"""
+        setup_server(total=1, open_total=2)
+        add_main(1, name="a1")
+        add_main(2, name="a2", iv=300)
+        patch_service(FakeService())
+        ok1, _ = open_account(FakeCall(1), "test", "t_a1", "p", "1")
+        self.assertTrue(ok1)                                   # main 池 1/1
+        ok2, out2 = open_account(FakeCall(2), "test", "t_a2", "p", "2")
+        self.assertFalse(ok2)
+        self.assertIn("主服用户名额已满", out2)
+        # 把 2 改成无主服号状态 → 走 open 池成功
+        se.sql_update_emby(se.Emby.tg == 2, embyid=None, lv='d')
+        ok3, out3 = open_account(FakeCall(2), "test", "t_a2b", "p", "2", copied=False)
+        self.assertTrue(ok3, out3)
+        q = sx.xquota_get("test")
+        self.assertEqual((q.used, q.used_open), (1, 1))
 
     def test_slot_full_and_name_occupied(self):
         setup_server(total=1)

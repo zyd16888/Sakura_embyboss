@@ -130,6 +130,7 @@ def boot():
 
     # pyrogram / pyromod 桩（面板装饰器与按钮构建）
     filters_stub = types.SimpleNamespace(regex=_regex, command=_command, user=_user,
+                                         private=_Filter('private'),
                                          create=lambda f: _Filter('create'))
     pyrogram_stub = types.ModuleType("pyrogram")
     pyrogram_stub.filters = filters_stub

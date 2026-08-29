@@ -1,6 +1,9 @@
 """
 xserver（测试服）管理面板 —— 全部走新表新文件，不触碰主服管理逻辑。
 
+双名额池管理：main（主服已有账号用户）与 open（无主服账号用户）各自独立
+➕/➖/设总数；账号行记录占用的池，删除/注销按原池回收。
+
 入口：
 - 私聊 `!xspanel`                    管理主页（名额/通道开关/开码/账号列表）
 - `!xsin  <tg|用户名> [server_id]`   查询账号
@@ -9,7 +12,7 @@ xserver（测试服）管理面板 —— 全部走新表新文件，不触碰�
 - `!xsrm  <用户名|tg> [server_id]`   删除账号并回收名额
 - `!xscrn <数量> <天数> [server_id]` 开续期码（资格码走面板按钮）
 
-回调前缀 `xsa:`，server_id 一律 hex 编码，避免与其他 handler 正则冲突。
+回调前缀 `xsa:`，server_id 一律 hex 编码；名额类回调携带 pool 段（main|open）。
 """
 from datetime import datetime, timedelta
 
@@ -26,8 +29,12 @@ from bot.func_helper.xserver import get_service, enabled_servers
 from bot.sql_helper.sql_emby import sql_get_emby
 from bot.sql_helper.sql_xserver import (xacc_get, xacc_get_any, xacc_all, xacc_update,
                                         xacc_delete, xacc_grant, xquota_get,
-                                        xquota_set_total, xquota_give, xcode_add)
+                                        xquota_set_total, xquota_give, xcode_add,
+                                        xquota_pool_used, xquota_pool_total,
+                                        POOL_MAIN, POOL_OPEN)
 from bot.modules.panel.xserver_panel import _enc, _dec, _xc_of
+
+POOL_LABEL = {POOL_MAIN: '主服用户', POOL_OPEN: '开放池'}
 
 
 # ---------------- 参数解析 ----------------
@@ -66,12 +73,17 @@ def _to_key(raw: str):
 def _admin_home_text(xc, q) -> str:
     ch = xc.channels
     on = lambda b: '✅' if b else '❎'  # noqa: E731
-    quota_line = (f"· 名额 | {q.used}/{q.total}（剩 {max(0, q.total - q.used)}）"
-                  if q else "· 名额 | 未初始化")
+    if q:
+        pm_u, pm_t = xquota_pool_used(q, POOL_MAIN), xquota_pool_total(q, POOL_MAIN)
+        po_u, po_t = xquota_pool_used(q, POOL_OPEN), xquota_pool_total(q, POOL_OPEN)
+        quota_block = (f"· 名额·主服用户 | {pm_u}/{pm_t}（剩 {max(0, pm_t - pm_u)}）\n"
+                       f"· 名额·开放池   | {po_u}/{po_t}（剩 {max(0, po_t - po_u)}）\n")
+    else:
+        quota_block = "· 名额 | 未初始化\n"
     return (f"**▎🧪 {xc.name} · 管理**\n\n"
             f"· 地址 | `{xc.url}`\n"
             f"· 线路 | {xc.line}\n"
-            f"{quota_line}\n"
+            f"{quota_block}"
             f"· 有效期 | {xc.expire_days} 天 · 前缀 `{xc.name_prefix}` · 并发 {xc.limit}\n\n"
             f"**开号通道**\n"
             f"{on(ch.main_user)} 主服一键 · {on(ch.whitelist)} 白名单免费 · "
@@ -81,14 +93,19 @@ def _admin_home_text(xc, q) -> str:
 def _admin_home_ikb(sid: str, xc) -> list:
     ch = xc.channels
     dot = lambda b: '🟢' if b else '🔴'  # noqa: E731
+    eh = _enc(sid)
     return [
-        [('➖ 减名额', f'xsa:qm:{_enc(sid)}'), ('➕ 加名额', f'xsa:qp:{_enc(sid)}'),
-         ('🎚 设总数', f'xsa:qt:{_enc(sid)}')],
-        [(f'{dot(ch.main_user)}主服一键', f'xsa:tc:{_enc(sid)}:main_user'),
-         (f'{dot(ch.whitelist)}白名单', f'xsa:tc:{_enc(sid)}:whitelist'),
-         (f'{dot(ch.points)}积分兑换', f'xsa:tc:{_enc(sid)}:points')],
-        [(f'💰 改单价{ch.points_cost}', f'xsa:pc:{_enc(sid)}')],
-        [('🎫 开资格码', f'xsa:cr:{_enc(sid)}'), ('📋 账号列表', f'xsa:li:{_enc(sid)}:0')],
+        [(f'➖ 主服池', f'xsa:qm:{eh}:{POOL_MAIN}'),
+         (f'➕ 主服池', f'xsa:qp:{eh}:{POOL_MAIN}'),
+         (f'🎚 主服总数', f'xsa:qt:{eh}:{POOL_MAIN}')],
+        [(f'➖ 开放池', f'xsa:qm:{eh}:{POOL_OPEN}'),
+         (f'➕ 开放池', f'xsa:qp:{eh}:{POOL_OPEN}'),
+         (f'🎚 开放总数', f'xsa:qt:{eh}:{POOL_OPEN}')],
+        [(f'{dot(ch.main_user)}主服一键', f'xsa:tc:{eh}:main_user'),
+         (f'{dot(ch.whitelist)}白名单', f'xsa:tc:{eh}:whitelist'),
+         (f'{dot(ch.points)}积分兑换', f'xsa:tc:{eh}:points')],
+        [(f'💰 改单价{ch.points_cost}', f'xsa:pc:{eh}')],
+        [('🎫 开资格码', f'xsa:cr:{eh}'), ('📋 账号列表', f'xsa:li:{eh}:0')],
         [('🔙 返回', 'manage')],
     ]
 
@@ -133,27 +150,34 @@ async def xs_admin_home_cb(_, call):
     return await _admin_home_render(_, call, _dec(call.data.split(':')[2]))
 
 
-# ---------------- 名额调整 ----------------
+# ---------------- 名额调整（双池） ----------------
 
 @bot.on_callback_query(filters.regex('^xsa:q[pm]:') & admins_on_filter)
 async def xs_quota_add_minus(_, call):
-    act, sid_hex = call.data.split(':')[1], call.data.split(':')[2]
+    act, sid_hex, pool = call.data.split(':')[1:4]
+    pool = pool if pool in (POOL_MAIN, POOL_OPEN) else POOL_MAIN
     sid = _dec(sid_hex)
     delta = 1 if act == 'qp' else -1
     q = xquota_get(sid)
     if q is None:
         return await callAnswer(call, '⚠️ 名额未初始化', True)
-    new_total = int(q.total or 0) + delta
-    if new_total < int(q.used or 0):
-        return await callAnswer(call, f'⚠️ 总名额不得低于已用 {q.used}', True)
-    xquota_set_total(sid, new_total)
+    new_total = xquota_pool_total(q, pool) + delta
+    if new_total < xquota_pool_used(q, pool):
+        return await callAnswer(call,
+                                f'⚠️ {POOL_LABEL[pool]}总名额不得低于已用 '
+                                f'{xquota_pool_used(q, pool)}', True)
+    xquota_set_total(sid, new_total, pool)
     await _admin_home_render(_, call, sid)
 
 
 @bot.on_callback_query(filters.regex('^xsa:qt:') & admins_on_filter)
 async def xs_quota_set(_, call):
-    sid = _dec(call.data.split(':')[2])
-    msg = await ask_return(call, text='🎚 发送新的**总名额**数字（取消 /cancel）', timer=120)
+    sid_hex, pool = call.data.split(':')[2], call.data.split(':')[3]
+    pool = pool if pool in (POOL_MAIN, POOL_OPEN) else POOL_MAIN
+    sid = _dec(sid_hex)
+    msg = await ask_return(call,
+                           text=f'🎚 发送 {POOL_LABEL[pool]} 的**总名额**数字（取消 /cancel）',
+                           timer=120)
     if not msg:
         return
     if msg.text.strip() == '/cancel':
@@ -164,9 +188,11 @@ async def xs_quota_set(_, call):
     except (ValueError, AssertionError):
         return await sendMessage(call, '⚠️ 请发送非负整数', timer=60)
     q = xquota_get(sid)
-    if q and total < int(q.used or 0):
-        return await sendMessage(call, f'⚠️ 当前已用 {q.used}，总名额不得低于此数', timer=60)
-    xquota_set_total(sid, total)
+    if q and total < xquota_pool_used(q, pool):
+        return await sendMessage(call,
+                                 f'⚠️ {POOL_LABEL[pool]}当前已用 {xquota_pool_used(q, pool)}，'
+                                 f'总名额不得低于此数', timer=60)
+    xquota_set_total(sid, total, pool)
     await _admin_home_render(_, call, sid)
 
 
@@ -190,7 +216,8 @@ async def xs_toggle_channel(_, call):
 @bot.on_callback_query(filters.regex('^xsa:pc:') & admins_on_filter)
 async def xs_points_cost(_, call):
     sid = _dec(call.data.split(':')[2])
-    msg = await ask_return(call, text=f'💰 发送新的积分开号单价（{sakura_b}，取消 /cancel）', timer=120)
+    msg = await ask_return(call, text=f'💰 发送新的积分开号单价（{sakura_b}，取消 /cancel）',
+                           timer=120)
     if not msg:
         return
     if msg.text.strip() == '/cancel':
@@ -279,13 +306,17 @@ async def xs_admin_info(_, msg):
         return await sendMessage(msg, f'❌ `{sid}` 未找到账号 `{args[0]}`', timer=60)
     xc = _xc_of(sid)
     q = xquota_get(sid)
-    quota_line = f"· 当前名额 | {q.used}/{q.total}" if q else ''
+    quota_line = ''
+    if q:
+        quota_line = (f"· 名额·主服用户 | {xquota_pool_used(q, POOL_MAIN)}/{xquota_pool_total(q, POOL_MAIN)}\n"
+                      f"· 名额·开放池   | {xquota_pool_used(q, POOL_OPEN)}/{xquota_pool_total(q, POOL_OPEN)}")
     text = (f"**▎🧪 {xc.name} 账号档案**\n\n"
             f"· TG | `{a.tg}`\n"
             f"· EmbyID | `{a.embyid or '（未开号，持资格）'}`\n"
             f"· 用户名 | `{a.name or '-'}`\n"
             f"· 状态 | `{a.lv}` · 资格 {int(a.us or 0)} 天\n"
             f"· 创建 | {a.cr} · 到期 | {a.ex}\n"
+            f"· 占用池 | `{POOL_LABEL.get(a.pool or POOL_MAIN, a.pool)}`\n"
             f"{quota_line}")
     await sendMessage(msg, text, buttons=ikb([[('🔙 主页', 'xsa:m')]]))
 
@@ -364,11 +395,13 @@ async def xs_admin_remove(_, msg):
             if not gone:
                 return await sendMessage(msg, '❌ 远端删除失败（服务器不通？），已中止', timer=60)
     xacc_delete(sid, a.tg)
+    pool = a.pool or POOL_MAIN
     if a.embyid:
-        xquota_give(sid)
+        xquota_give(sid, pool)
     name = a.name or str(a.tg)
-    LOGGER.info(f'【xserver管理】{msg.from_user.id} 删除 {sid}/{name}，名额已回收')
-    await sendMessage(msg, f'✅ 已删除 `{name}`（{xc.name if xc else sid}），名额已回收')
+    LOGGER.info(f'【xserver管理】{msg.from_user.id} 删除 {sid}/{name}，名额已退回{POOL_LABEL[pool]}')
+    await sendMessage(msg, f'✅ 已删除 `{name}`（{xc.name if xc else sid}），'
+                          f'名额已退回{POOL_LABEL[pool]}')
     try:
         await bot.send_message(a.tg, f'🧪 管理员删除了你的测试服账号 `{name}`，名额已释放')
     except Exception:
@@ -388,13 +421,18 @@ async def xs_admin_list(_, call):
     page = min(max(page, 0), total_page - 1)
     chunk = rows[page * per:(page + 1) * per]
     q = xquota_get(sid)
-    quota_line = f" · 名额 {q.used}/{q.total}" if q else ''
+    quota_line = ''
+    if q:
+        quota_line = (f" 主服 {xquota_pool_used(q, POOL_MAIN)}/{xquota_pool_total(q, POOL_MAIN)}"
+                      f" 开放 {xquota_pool_used(q, POOL_OPEN)}/{xquota_pool_total(q, POOL_OPEN)}")
     lines = [f"**▎🧪 账号列表** · 共 {len(rows)}{quota_line}\n"]
     kb = []
     for a in chunk:
         st = {'b': '🟢', 'c': '🔒'}.get(a.lv or 'd', '🎫')
         exp = a.ex.strftime('%m-%d %H:%M') if a.ex else '-'
-        lines.append(f"{st} `{a.tg}` {a.name or '（待开号）'} 资格{int(a.us or 0)} 到期{exp}")
+        pool_tag = '开' if (a.pool == POOL_OPEN) else ('主' if a.pool == POOL_MAIN else '·')
+        lines.append(f"{st}[{pool_tag}] `{a.tg}` {a.name or '（待开号）'} "
+                     f"资格{int(a.us or 0)} 到期{exp}")
         kb.append([(f'👤 {a.tg}', f'xsa:u:{sid_hex}:{a.tg}')])
     nav = []
     if page > 0:
@@ -419,7 +457,8 @@ async def xs_admin_user(_, call):
             f"· ID | `{a.embyid or '待开号'}`\n"
             f"· 用户名 | `{a.name or '-'}`\n"
             f"· 状态 `{a.lv}` · 资格 {int(a.us or 0)} 天\n"
-            f"· 到期 | {a.ex or '-'}")
+            f"· 到期 | {a.ex or '-'}\n"
+            f"· 占用池 | `{POOL_LABEL.get(a.pool or POOL_MAIN, a.pool)}`")
     btn = []
     if a.embyid:
         if a.lv == 'b':
@@ -482,7 +521,7 @@ async def xs_admin_delete_cb(_, call):
         if not gone:
             return await callAnswer(call, '❌ 远端删除失败，已中止', True)
     xacc_delete(sid, tg)
-    xquota_give(sid)
+    xquota_give(sid, a.pool or POOL_MAIN)
     LOGGER.info(f'【xserver管理】{call.from_user.id} 面板删除 {sid}/{a.name}')
-    await editMessage(call, f'✅ 已删除 `{a.name}`，名额已回收',
+    await editMessage(call, f'✅ 已删除 `{a.name}`，名额已退回原池',
                       buttons=ikb([[('📋 列表', f'xsa:li:{sid_hex}:0')]]))

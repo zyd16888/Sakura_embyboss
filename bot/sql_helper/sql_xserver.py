@@ -3,7 +3,9 @@ xserver（扩展服务器/测试服）数据层 —— 与原有 emby/emby2/Rcod
 
 - xserver_account:  (server_id, tg) 复合主键，一个用户在一台扩展服务器一条记录；
                     embyid 为空但 us>0 表示「持有开号资格待使用」。
-- xserver_quota:    server_id 主键，名额池 total/used，占用/回收均为单条原子SQL，杜绝超卖。
+                    pool 记录占用哪个名额池：main=主服已有账号 / open=主服无账号。
+- xserver_quota:    server_id 主键，双名额池 total/used（主服用户池）与
+                    total_open/used_open（开放池），占用/回收均为单条原子SQL，杜绝超卖。
 - xserver_code:     测试服注册码（独立于 Rcode），前缀 XREG/XRNV 区分注册/续期。
 """
 from datetime import datetime
@@ -12,6 +14,9 @@ from sqlalchemy import Column, String, DateTime, Integer, BigInteger, or_
 
 from bot.sql_helper import Base, Session
 from bot import LOGGER
+
+POOL_MAIN = 'main'   # 主服已有账号用户
+POOL_OPEN = 'open'   # 主服没有账号的纯测试用户
 
 
 class XserverAccount(Base):
@@ -29,14 +34,18 @@ class XserverAccount(Base):
     ex = Column(DateTime, nullable=True)
     # 开号资格天数（管理员发放 xsgr / 注册码兑换），0=无资格
     us = Column(Integer, default=0)
+    # 占用的名额池：main | open（未开号的行为 NULL）
+    pool = Column(String(10), nullable=True)
 
 
 class XserverQuota(Base):
-    """xserver名额表，server_id 主键"""
+    """xserver名额表，server_id 主键，双池"""
     __tablename__ = 'xserver_quota'
     server_id = Column(String(50), primary_key=True, autoincrement=False)
-    total = Column(Integer, default=0)
+    total = Column(Integer, default=0)         # 主服用户池总数
     used = Column(Integer, default=0)
+    total_open = Column(Integer, default=0)    # 无主服账号用户池总数
+    used_open = Column(Integer, default=0)
     update_time = Column(DateTime, nullable=True)
 
 
@@ -52,16 +61,31 @@ class XserverCode(Base):
     usedtime = Column(DateTime, nullable=True)
 
 
-# ---------------- quota ----------------
+# ---------------- quota（双池） ----------------
 
-def xquota_ensure(server_id: str, total_seed: int) -> bool:
-    """确保名额行存在，total 以种子值初始化（已存在则不覆盖）"""
+def _pool_cols(pool: str):
+    if pool == POOL_OPEN:
+        return XserverQuota.total_open, XserverQuota.used_open
+    return XserverQuota.total, XserverQuota.used
+
+
+def xquota_ensure(server_id: str, total_seed: int, open_seed=None) -> bool:
+    """确保名额行存在；total 以种子初始化（已有值不覆盖），open_seed 默认同 total_seed"""
+    if open_seed is None:
+        open_seed = total_seed
     with Session() as session:
         try:
             row = session.query(XserverQuota).filter(XserverQuota.server_id == server_id).first()
             if row is None:
                 session.add(XserverQuota(server_id=server_id, total=int(total_seed), used=0,
+                                         total_open=int(open_seed), used_open=0,
                                          update_time=datetime.now()))
+                session.commit()
+            elif row.total_open is None:
+                # 老库升级：开放池补种子
+                row.total_open = int(open_seed)
+                if row.used_open is None:
+                    row.used_open = 0
                 session.commit()
             return True
         except Exception as e:
@@ -70,16 +94,21 @@ def xquota_ensure(server_id: str, total_seed: int) -> bool:
             return False
 
 
-def xquota_set_total(server_id: str, total: int) -> bool:
-    """管理员设置总名额"""
+def xquota_set_total(server_id: str, total: int, pool: str = POOL_MAIN) -> bool:
+    """管理员设置某池总名额"""
+    total_col, _ = _pool_cols(pool)
     with Session() as session:
         try:
             row = session.query(XserverQuota).filter(XserverQuota.server_id == server_id).first()
             if row is None:
-                session.add(XserverQuota(server_id=server_id, total=int(total), used=0,
+                session.add(XserverQuota(server_id=server_id,
+                                         total=int(total) if pool == POOL_MAIN else 0,
+                                         used=0,
+                                         total_open=int(total) if pool == POOL_OPEN else 0,
+                                         used_open=0,
                                          update_time=datetime.now()))
             else:
-                row.total = int(total)
+                setattr(row, total_col.name, int(total))
                 row.update_time = datetime.now()
             session.commit()
             return True
@@ -89,38 +118,41 @@ def xquota_set_total(server_id: str, total: int) -> bool:
             return False
 
 
-def xquota_take(server_id: str) -> bool:
-    """原子占坑：UPDATE ... WHERE used < total。失败即名额已满"""
+def xquota_take(server_id: str, pool: str = POOL_MAIN) -> bool:
+    """原子占坑（指定池）：UPDATE ... WHERE used < total。失败即该池已满"""
+    _, used_col = _pool_cols(pool)
+    total_col = XserverQuota.total_open if pool == POOL_OPEN else XserverQuota.total
     with Session() as session:
         try:
             cnt = session.query(XserverQuota).filter(
                 XserverQuota.server_id == server_id,
-                XserverQuota.used < XserverQuota.total,
-            ).update({XserverQuota.used: XserverQuota.used + 1,
+                used_col < total_col,
+            ).update({used_col: used_col + 1,
                       XserverQuota.update_time: datetime.now()},
                      synchronize_session=False)
             session.commit()
             return cnt == 1
         except Exception as e:
-            LOGGER.error(f"【xserver】quota_take 失败 {server_id}: {e}")
+            LOGGER.error(f"【xserver】quota_take 失败 {server_id}/{pool}: {e}")
             session.rollback()
             return False
 
 
-def xquota_give(server_id: str) -> bool:
-    """原子回收：used-1，下限0（幂等保护）"""
+def xquota_give(server_id: str, pool: str = POOL_MAIN) -> bool:
+    """原子回收（指定池）：used-1，下限0（幂等保护）"""
+    _, used_col = _pool_cols(pool)
     with Session() as session:
         try:
             cnt = session.query(XserverQuota).filter(
                 XserverQuota.server_id == server_id,
-                XserverQuota.used > 0,
-            ).update({XserverQuota.used: XserverQuota.used - 1,
+                used_col > 0,
+            ).update({used_col: used_col - 1,
                       XserverQuota.update_time: datetime.now()},
                      synchronize_session=False)
             session.commit()
             return cnt == 1
         except Exception as e:
-            LOGGER.error(f"【xserver】quota_give 失败 {server_id}: {e}")
+            LOGGER.error(f"【xserver】quota_give 失败 {server_id}/{pool}: {e}")
             session.rollback()
             return False
 
@@ -133,6 +165,14 @@ def xquota_get(server_id: str):
         except Exception as e:
             LOGGER.error(f"【xserver】quota_get 失败 {server_id}: {e}")
             return None
+
+
+def xquota_pool_used(q, pool: str) -> int:
+    return int(getattr(q, 'used_open' if pool == POOL_OPEN else 'used', 0) or 0)
+
+
+def xquota_pool_total(q, pool: str) -> int:
+    return int(getattr(q, 'total_open' if pool == POOL_OPEN else 'total', 0) or 0)
 
 
 # ---------------- account ----------------
@@ -174,20 +214,6 @@ def xacc_all(server_id: str = None):
             return []
 
 
-def xacc_expired(server_id: str, now: datetime):
-    """已到期或已封印待删除的行（到期任务扫描用，含半成品行）"""
-    with Session() as session:
-        try:
-            return session.query(XserverAccount).filter(
-                XserverAccount.server_id == server_id,
-                or_(XserverAccount.ex < now,
-                    (XserverAccount.ex.is_(None)) & (XserverAccount.embyid.isnot(None)))
-            ).all()
-        except Exception as e:
-            LOGGER.error(f"【xserver】acc_expired 扫描失败 {server_id}: {e}")
-            return []
-
-
 def xacc_expired_rows(server_id: str, now: datetime):
     """到期行（ex < now）或半成品行（已建号但无到期时间）。走本模块 Session。"""
     with Session() as session:
@@ -203,11 +229,12 @@ def xacc_expired_rows(server_id: str, now: datetime):
 
 
 def xacc_add(server_id: str, tg: int, embyid: str, name: str, pwd: str, pwd2: str,
-             ex: datetime, lv: str = 'b', us: int = 0) -> bool:
+             ex: datetime, lv: str = 'b', us: int = 0, pool: str = POOL_MAIN) -> bool:
     with Session() as session:
         try:
             session.add(XserverAccount(server_id=server_id, tg=tg, embyid=embyid, name=name,
-                                       pwd=pwd, pwd2=pwd2, lv=lv, cr=datetime.now(), ex=ex, us=us))
+                                       pwd=pwd, pwd2=pwd2, lv=lv, cr=datetime.now(), ex=ex,
+                                       us=us, pool=pool))
             session.commit()
             return True
         except Exception as e:
