@@ -116,14 +116,18 @@ def _admin_home_ikb(sid: str, xc) -> list:
 async def _admin_home_render(_, update, sid: str):
     xc = await _xc_any(sid)  # 管理侧允许已禁用的服务器
     if xc is None:
-        return await callAnswer(update, '⚠️ 服务器不存在', True)
+        if isinstance(update, CallbackQuery):
+            return await callAnswer(update, '⚠️ 服务器不存在', True)
+        return await sendMessage(update, '⚠️ 服务器不存在', timer=60)
     if xc.enable:
         get_service(sid)  # 确保 quota 种子
     q = xquota_get(sid)
+    text = _admin_home_text(xc, q)
+    buttons = ikb(_admin_home_ikb(sid, xc))
     if isinstance(update, CallbackQuery):
         await callAnswer(update, f'🧪 {xc.name}')
-    return await editMessage(update, _admin_home_text(xc, q),
-                             buttons=ikb(_admin_home_ikb(sid, xc)))
+        return await editMessage(update, text, buttons=buttons)
+    return await sendMessage(update, text, buttons=buttons)
 
 def _all_configured_servers():
     return list(config.xservers or [])
@@ -136,15 +140,17 @@ def _server_rows(servers):
 
 @bot.on_message(filters.command('xspanel', prefixes) & admins_on_filter & filters.private)
 async def xs_admin_cmd(_, msg):
-    await deleteMessage(msg)
     servers = _all_configured_servers()
     if not servers:
-        return await sendMessage(msg, '⚠️ 尚未配置测试服（config.xservers）', timer=60)
-    if len(servers) == 1:
-        return await _admin_home_render(_, msg, servers[0].id)
-    rows = _server_rows(servers)
-    await sendMessage(msg, '**🧪 测试服管理 · 选择服务器**（🔴=已禁用）',
-                      buttons=ikb(rows))
+        result = await sendMessage(msg, '⚠️ 尚未配置测试服（config.xservers）', timer=60)
+    elif len(servers) == 1:
+        result = await _admin_home_render(_, msg, servers[0].id)
+    else:
+        rows = _server_rows(servers)
+        result = await sendMessage(msg, '**🧪 测试服管理 · 选择服务器**（🔴=已禁用）',
+                                   buttons=ikb(rows))
+    await deleteMessage(msg)
+    return result
 
 
 @bot.on_callback_query(filters.regex('^xsa:m$') & admins_on_filter)

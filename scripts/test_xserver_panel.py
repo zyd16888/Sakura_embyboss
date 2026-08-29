@@ -25,6 +25,7 @@ Xserver = NS["Xserver"]
 captured = NS["captured"]
 
 from bot.modules.panel import xserver_panel as xp  # noqa: E402
+from bot.modules.panel import xserver_admin as xa  # noqa: E402
 from bot.modules.commands import xserver_code as xcode  # noqa: E402
 from bot.scheduler import xserver_ex  # noqa: E402
 
@@ -343,6 +344,21 @@ class CodeTests(unittest.TestCase):
         a = sx.xacc_get("test", 666)
         self.assertIsNotNone(a)
         self.assertEqual(int(a.us), 7)  # 转为资格，码不浪费
+
+
+# ---------------- 管理面板入口 ----------------
+
+class AdminPanelEntryTests(unittest.TestCase):
+    def test_command_sends_panel_before_deleting_request(self):
+        setup_server()
+        msg = FakeMsg(1, "/xspanel", "admin")
+
+        run(xa.xs_admin_cmd(None, msg))
+
+        self.assertEqual(captured[0][0], "send")
+        self.assertIn("测试服 · 管理", captured[0][1])
+        self.assertEqual(captured[-1], ("delete",))
+        self.assertFalse(any(item[0] == "edit" for item in captured))
 
 
 # ---------------- 到期任务 ----------------
