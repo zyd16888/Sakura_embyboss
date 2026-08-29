@@ -7,27 +7,54 @@ on:
 
 jobs:
   push_to_registries:
-    name: Push docker image to docker hub
+    name: Push docker image (GHCR + optional Docker Hub)
     runs-on: ubuntu-latest
     permissions:
       packages: write
       contents: read
     steps:
-      -
-        name: Checkout
+      - name: Checkout
         uses: actions/checkout@v3
-      -
-        name: Set up QEMU
+
+      - name: Compute image owner (lowercase for GHCR)
+        run: echo "IMAGE_OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
-      -
-        name: Set up Docker Buildx
+
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
-      -
-        name: Login to Docker Hub
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build image tag list
+        id: meta
+        env:
+          HUB_USER: ${{ secrets.DOCKER_USERNAME }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # workflow_dispatch 手动触发时没有 tag，回退为 latest
+          [ -z "$TAG" ] && TAG=latest
+          tags="ghcr.io/${IMAGE_OWNER}/sakura_embyboss:${TAG}"
+          if [ "$TAG" != "latest" ]; then
+            tags="${tags},ghcr.io/${IMAGE_OWNER}/sakura_embyboss:latest"
+          fi
+          if [ -n "$HUB_USER" ]; then
+            tags="${tags},${HUB_USER}/sakura_embyboss:${TAG}"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push images
         uses: docker/build-push-action@v4
@@ -36,5 +63,4 @@ jobs:
           platforms: linux/amd64,linux/arm64
           file: ./Dockerfile
           push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/sakura_embyboss:${{ github.event.release.tag_name }}
+          tags: ${{ steps.meta.outputs.tags }}

@@ -34,6 +34,8 @@ services:
 
   embyboss:
     image: jingwei520/sakura_embyboss:latest # ARM与AMD镜像名称相同，会自动加载适合的镜像
+    # fork 自建镜像（GHCR）示例：需先 docker login ghcr.io，或将包设为 public
+    # image: ghcr.io/你的用户名小写/sakura_embyboss:latest
     container_name: embyboss
     restart: always
     network_mode: host
