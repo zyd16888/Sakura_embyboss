@@ -5,93 +5,87 @@ from bot import admins, owner, group, LOGGER
 from pyrogram.enums import ChatMemberStatus
 
 
-# async def owner_filter(client, update):
-#     """
-#     过滤 owner
-#     :param client:
-#     :param update:
-#     :return:
-#     """
-#     user = update.from_user or update.sender_chat
-#     uid = user.id
-#     return uid == owner
+_MEMBER_STATUSES = {
+    ChatMemberStatus.ADMINISTRATOR,
+    ChatMemberStatus.MEMBER,
+    ChatMemberStatus.OWNER,
+}
 
-# 三个参数给on用
-async def admins_on_filter(filt, client, update) -> bool:
-    """
-    过滤admins中id，包括owner
-    :param client:
-    :param update:
-    :return:
-    """
+
+def _user_id(update):
     user = update.from_user or update.sender_chat
-    uid = user.id
-    return bool(uid == owner or uid in admins or uid in group)
+    return user.id if user else None
+
+
+async def _answer_membership_failure(update, text: str):
+    answer = getattr(update, 'answer', None)
+    if answer is None:
+        return
+    try:
+        await answer(text, show_alert=True)
+    except Exception as e:
+        LOGGER.warning(f"群组资格失败提示发送失败: {e}")
+
+
+async def _is_authorized_group_user(client, update, notify=False) -> bool:
+    uid = _user_id(update)
+    if uid is None:
+        return False
+    if uid == owner or uid in admins:
+        return True
+
+    lookup_failed = False
+    for chat_id in group:
+        try:
+            member = await client.get_chat_member(chat_id=int(chat_id), user_id=uid)
+        except BadRequest as e:
+            error_id = getattr(e, 'ID', '')
+            if error_id == 'USER_NOT_PARTICIPANT':
+                continue
+            lookup_failed = True
+            if error_id == 'CHAT_ADMIN_REQUIRED':
+                LOGGER.error(f"bot不能在 {chat_id} 中工作，请检查bot是否在群组及其权限设置")
+            else:
+                LOGGER.warning(f"检查用户 {uid} 的群组 {chat_id} 资格失败: {e}")
+            continue
+        except Exception as e:
+            lookup_failed = True
+            LOGGER.warning(f"检查用户 {uid} 的群组 {chat_id} 资格异常: {e}")
+            continue
+
+        if member.status in _MEMBER_STATUSES:
+            return True
+        if (member.status == ChatMemberStatus.RESTRICTED
+                and getattr(member, 'is_member', True)):
+            return True
+
+    if notify:
+        text = ('⚠️ 群组资格检查暂时失败，请稍后重试。' if lookup_failed else
+                '⚠️ 请先加入授权群组后再使用机器人。')
+        await _answer_membership_failure(update, text)
+    return False
+
+
+async def admins_on_filter(filt, client, update) -> bool:
+    """过滤 admins 中的 ID，包括 owner。"""
+    uid = _user_id(update)
+    return bool(uid == owner or uid in admins)
 
 
 async def admins_filter(update):
-    """
-    过滤admins中id，包括owner
-    """
-    user = update.from_user or update.sender_chat
-    uid = user.id
+    """过滤 admins 中的 ID，包括 owner。"""
+    uid = _user_id(update)
     return bool(uid == owner or uid in admins)
 
 
 async def user_in_group_filter(client, update):
-    """
-    过滤在授权组中的人员
-    :param client:
-    :param update:
-    :return:
-    """
-    uid = update.from_user or update.sender_chat
-    uid = uid.id
-    for i in group:
-        try:
-            u = await client.get_chat_member(chat_id=int(i), user_id=uid)
-            if u.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED]:
-                return True
-        except BadRequest as e:
-            if e.ID == 'USER_NOT_PARTICIPANT':
-                return False
-            elif e.ID == 'CHAT_ADMIN_REQUIRED':
-                LOGGER.error(f"bot不能在 {i} 中工作，请检查bot是否在群组及其权限设置")
-                return False
-            else:
-                return False
-        else:
-            continue
-    return False
+    """供函数直接调用的授权群成员检查。"""
+    return await _is_authorized_group_user(client, update)
 
 
 async def user_in_group_on_filter(filt, client, update):
-    """
-    过滤在授权组中的人员
-    :param client:
-    :param update:
-    :return:
-    """
-    uid = update.from_user or update.sender_chat
-    uid = uid.id
-    if uid in group:
-        return True
-    for i in group:
-        try:
-            u = await client.get_chat_member(chat_id=int(i), user_id=uid)
-            if u.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER,
-                            ChatMemberStatus.OWNER]:  # 移除了 'ChatMemberStatus.RESTRICTED' 防止有人进群直接注册不验证
-                return True  # 因为被限制用户无法使用bot，所以需要检查权限。
-        except BadRequest as e:
-            if e.ID == 'USER_NOT_PARTICIPANT':
-                return False
-            elif e.ID == 'CHAT_ADMIN_REQUIRED':
-                LOGGER.error(f"bot不能在 {i} 中工作，请检查bot是否在群组及其权限设置")
-                return False
-            else:
-                return False
-    return False
-
+    """供 Pyrogram handler 使用；拒绝回调时给用户明确提示。"""
+    return await _is_authorized_group_user(client, update, notify=True)
 
 # 过滤 on_message or on_callback 的admin
 admins_on_filter = create(admins_on_filter)
