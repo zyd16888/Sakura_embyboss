@@ -156,6 +156,22 @@ class EligibilityTests(unittest.TestCase):
         self.assertEqual(xp._eligibility(xc, main_ok, grant), ('grant', 0))
 
 
+# ---------------- 用户面板展示 ----------------
+
+class UserPanelDisplayTests(unittest.TestCase):
+    def test_existing_account_shows_login_password(self):
+        setup_server()
+        add_main(111, name="alice", pwd="pw123", pwd2="9999")
+        patch_service(FakeService())
+        ok, out = open_account(FakeCall(111), "test", "t_alice", "pw123", "9999")
+        self.assertTrue(ok, out)
+
+        run(xp.xs_home_show(None, FakeCall(111), "test"))
+
+        panel = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("· 登录密码 | `pw123`", panel[1])
+
+
 # ---------------- 开号流程 ----------------
 
 class OpenFlowTests(unittest.TestCase):

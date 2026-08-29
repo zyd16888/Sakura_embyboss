@@ -157,13 +157,15 @@ async def xs_home_show(_, call, sid: str):
     pool = _pool_of(main)
 
     acc_line = '· 未开通'
+    password_line = ''
     if a and a.embyid:
         acc_line = f" · `{a.name}` | 状态 {a.lv} | 到期 `{a.ex}`"
+        password_line = f"\n· 登录密码 | `{a.pwd}`"
 
     # 线路仅对已在本服开过号的用户展示
     line_block = f"· 线路 |\n{xc.line}" if (a and a.embyid) else "· 线路 | 🔒 开通账号后可见"
     text = (f"**▎🧪 {xc.name}面板**\n\n"
-            f"· 我的账号{acc_line}\n"
+            f"· 我的账号{acc_line}{password_line}\n"
             f"{_quota_lines(q, pool)}\n"
             f"{line_block}\n\n"
             f"**开号通道**\n{_channel_text(xc, main)}\n\n"
