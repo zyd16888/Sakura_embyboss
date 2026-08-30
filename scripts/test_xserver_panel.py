@@ -173,6 +173,26 @@ class UserPanelDisplayTests(unittest.TestCase):
         panel = next(item for item in reversed(captured) if item[0] == "edit")
         self.assertIn("· 登录密码 | `pw123`", panel[1])
 
+    def test_insufficient_points_disables_open_buttons_and_uses_currency_name(self):
+        setup_server()
+        add_main(112, name="poor", embyid=None, lv="d", iv=0)
+        patch_service(FakeService())
+        currency_name = "金币"
+        original_currency_name = xp.sakura_b
+        xp.sakura_b = currency_name
+        try:
+            run(xp.xs_home_show(None, FakeCall(112), "test"))
+        finally:
+            xp.sakura_b = original_currency_name
+
+        panel = next(item for item in reversed(captured) if item[0] == "edit")
+        buttons = [button for row in panel[2] for button in row]
+        self.assertIn(
+            (f"🚫 {currency_name}不足 · 需要 100（持有 0）", f"xs:h:{xp._enc('test')}"),
+            buttons,
+        )
+        self.assertFalse(any(data.startswith(("xs:c:", "xs:q:")) for _, data in buttons))
+
 
 # ---------------- 开号流程 ----------------
 
@@ -189,6 +209,23 @@ class OpenFlowTests(unittest.TestCase):
         self.assertEqual((a.name, a.pwd, a.pwd2, a.lv), ("t_alice", "pw123", "9999", "b"))
         self.assertEqual(sx.xquota_get("test").used, 1)
         self.assertIn("开号成功", out)
+
+    def test_create_rejects_insufficient_points_before_prompt(self):
+        setup_server()
+        add_main(113, name="poor", embyid=None, lv="d", iv=0)
+        patch_service(FakeService())
+        currency_name = "金币"
+        original_currency_name = xp.sakura_b
+        xp.sakura_b = currency_name
+        try:
+            run(xp.xs_create(None, FakeCall(113, f"xs:c:{xp._enc('test')}")))
+        finally:
+            xp.sakura_b = original_currency_name
+
+        self.assertFalse(any(item[0] == "ask" for item in captured))
+        answer = next(item for item in reversed(captured) if item[0] == "answer")
+        self.assertEqual(
+            answer[1], f"💦 {currency_name}不足，开号需要 100{currency_name}，当前 0")
 
     def test_points_deduct_and_full_rollback(self):
         setup_server()

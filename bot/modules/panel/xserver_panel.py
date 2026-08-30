@@ -173,6 +173,7 @@ async def xs_home_show(_, call, sid: str):
 
     buttons = []
     kind, cost = _eligibility(xc, main, a)
+    balance = int(getattr(main, 'iv', 0) or 0)
     has_account = bool(a and a.embyid)
     slot_left = bool(q and xquota_pool_used(q, pool) < xquota_pool_total(q, pool))
     if has_account:
@@ -185,9 +186,13 @@ async def xs_home_show(_, call, sid: str):
         if reopen_locked:
             buttons.append([('🚫 你已体验过一次，名额留给别人', f'xs:h:{_enc(sid)}')])
         elif slot_left:
-            if main and main.embyid:
-                buttons.append([(f'🚀 一键开号{_fmt_cost(kind, cost)}', f'xs:q:{_enc(sid)}')])
-            buttons.append([(f'📝 单独开号{_fmt_cost(kind, cost)}', f'xs:c:{_enc(sid)}')])
+            if kind == 'points' and balance < cost:
+                buttons.append([(f'🚫 {sakura_b}不足 · 需要 {cost}（持有 {balance}）',
+                                 f'xs:h:{_enc(sid)}')])
+            else:
+                if main and main.embyid:
+                    buttons.append([(f'🚀 一键开号{_fmt_cost(kind, cost)}', f'xs:q:{_enc(sid)}')])
+                buttons.append([(f'📝 单独开号{_fmt_cost(kind, cost)}', f'xs:c:{_enc(sid)}')])
         else:
             buttons.append([('🚫 你所在名额池已满，稍后再试', f'xs:h:{_enc(sid)}')])
     grant_days = int(a.us or 0) if (a and not a.embyid) else 0
@@ -361,6 +366,13 @@ async def xs_create(_, call):
     xc = _xc_of(sid)
     if xc is None:
         return await callAnswer(call, '⚠️ 该服务器未开放', True)
+    main = sql_get_emby(call.from_user.id)
+    a = xacc_get(sid, call.from_user.id)
+    kind, cost = _eligibility(xc, main, a)
+    balance = int(getattr(main, 'iv', 0) or 0)
+    if kind == 'points' and balance < cost:
+        return await callAnswer(
+            call, f'💦 {sakura_b}不足，开号需要 {cost}{sakura_b}，当前 {balance}', True)
     msg = await ask_return(call,
                            text=f'🧪 **{xc.name} 开号**:\n\n'
                                 '• 请在2min内输入 `[用户名][空格][安全码]`\n'
