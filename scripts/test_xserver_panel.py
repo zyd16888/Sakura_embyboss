@@ -173,6 +173,20 @@ class UserPanelDisplayTests(unittest.TestCase):
         panel = next(item for item in reversed(captured) if item[0] == "edit")
         self.assertIn("· 登录密码 | `pw123`", panel[1])
 
+    def test_offer_shows_duration_cost_balance_and_once_only_rule(self):
+        setup_server(allow_reopen=False)
+        add_main(116, name="pending", embyid=None, lv="d", iv=250)
+        patch_service(FakeService())
+
+        run(xp.xs_home_show(None, FakeCall(116), "test"))
+
+        panel = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("· 本次有效期 | `15 天`", panel[1])
+        self.assertIn("扣除 100花币（余额 250 → 150）", panel[1])
+        self.assertIn("每人一次", panel[1])
+        buttons = [button for row in panel[2] for button in row]
+        self.assertTrue(any("100花币 · 15天" in label for label, _ in buttons))
+
     def test_insufficient_points_disables_open_buttons_and_uses_currency_name(self):
         setup_server()
         add_main(112, name="poor", embyid=None, lv="d", iv=0)
@@ -209,6 +223,82 @@ class OpenFlowTests(unittest.TestCase):
         self.assertEqual((a.name, a.pwd, a.pwd2, a.lv), ("t_alice", "pw123", "9999", "b"))
         self.assertEqual(sx.xquota_get("test").used, 1)
         self.assertIn("开号成功", out)
+        self.assertIn("本次有效期 | `15 天`", out)
+        self.assertIn("开通方式 | 免费", out)
+
+    def test_quick_open_previews_terms_without_creating(self):
+        setup_server(allow_reopen=False)
+        add_main(117, name="preview", iv=250)
+        svc = FakeService()
+        patch_service(svc)
+
+        run(xp.xs_quick(None, FakeCall(117, f"xs:q:{xp._enc('test')}")))
+
+        self.assertEqual(svc.calls, [])
+        self.assertIsNone(sx.xacc_get("test", 117))
+        self.assertEqual(se.sql_get_emby(117).iv, 250)
+        preview = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("确认开通", preview[1])
+        self.assertIn("本次有效期 | `15 天`", preview[1])
+        self.assertIn("开通方式 | 免费", preview[1])
+        self.assertIn("每人一次", preview[1])
+        self.assertIn(("✅ 确认开号", f"xs:qc:{xp._enc('test')}"), preview[2][0])
+
+    def test_quick_confirm_reports_points_charge_and_processing(self):
+        xc = setup_server()
+        xc.channels.main_user = False
+        add_main(118, name="paid", iv=250)
+        svc = FakeService()
+        patch_service(svc)
+
+        run(xp.xs_quick(None, FakeCall(118, f"xs:q:{xp._enc('test')}")))
+        self.assertEqual(se.sql_get_emby(118).iv, 250)
+        run(xp.xs_quick_confirm(None, FakeCall(118, f"xs:qc:{xp._enc('test')}")))
+
+        self.assertEqual(se.sql_get_emby(118).iv, 150)
+        self.assertEqual(svc.calls[0][:3], ("create", "t_paid", 15))
+        edits = [item for item in captured if item[0] == "edit"]
+        self.assertTrue(any("正在创建" in item[1] for item in edits))
+        self.assertIn("已扣 `100`", edits[-1][1])
+        self.assertIn("余额 `250 → 150`", edits[-1][1])
+
+    def test_create_accepts_default_underscore_prefix(self):
+        xc = setup_server()
+        add_main(114, name="pending", embyid=None, lv="d", iv=500)
+        svc = FakeService()
+        patch_service(svc)
+        call = FakeCall(114, f"xs:c:{xp._enc('test')}")
+        call._ask_reply = FakeMsg(114, "aluminum 1234")
+
+        run(xp.xs_create(None, call))
+
+        self.assertEqual(xc.name_prefix, "t_")
+        self.assertEqual(svc.calls[0][:3], ("create", "t_aluminum", 15))
+        self.assertTrue(svc.calls[0][3])
+        account = sx.xacc_get("test", 114)
+        self.assertEqual((account.name, account.pwd2), ("t_aluminum", "1234"))
+        prompt = next(item for item in captured if item[0] == "ask")
+        self.assertIn("本次有效期 | `15 天`", prompt[1])
+        self.assertIn("扣除 100花币（余额 500 → 400）", prompt[1])
+        self.assertTrue(any(item[0] == "reply" and "正在初始化" in item[1]
+                            for item in captured))
+        result = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("已扣 `100`", result[1])
+        self.assertIn("余额 `500 → 400`", result[1])
+
+    def test_create_rejects_special_character_before_service_call(self):
+        setup_server()
+        add_main(115, name="pending", embyid=None, lv="d", iv=500)
+        svc = FakeService()
+        patch_service(svc)
+        call = FakeCall(115, f"xs:c:{xp._enc('test')}")
+        call._ask_reply = FakeMsg(115, "bad_name 1234")
+
+        run(xp.xs_create(None, call))
+
+        self.assertEqual(svc.calls, [])
+        reply = next(item for item in reversed(captured) if item[0] == "reply")
+        self.assertIn("用户名含空格或特殊字符", reply[1])
 
     def test_create_rejects_insufficient_points_before_prompt(self):
         setup_server()
@@ -249,9 +339,28 @@ class OpenFlowTests(unittest.TestCase):
         patch_service(FakeService(create_ok=False))
         ok2, out2 = open_account(FakeCall(222), "test", "t_other", None, "1234", copied=False)
         self.assertFalse(ok2)
+        self.assertIn("已退回 `100花币`", out2)
+        self.assertIn("余额已恢复", out2)
         self.assertEqual(se.sql_get_emby(222).iv, 150)
         q = sx.xquota_get("test")
         self.assertEqual((q.used, q.used_open), (0, 0))
+
+    def test_rollback_failure_does_not_claim_refund_success(self):
+        setup_server()
+        add_main(223, name="rollback", iv=250, embyid=None, lv='d')
+        patch_service(FakeService(create_ok=False))
+        original_give = xp.xquota_give
+        xp.xquota_give = lambda *args, **kwargs: False
+        try:
+            ok, out = open_account(
+                FakeCall(223), "test", "t_rollback", None, "1234", copied=False)
+        finally:
+            xp.xquota_give = original_give
+
+        self.assertFalse(ok)
+        self.assertIn("自动回滚未完全成功", out)
+        self.assertNotIn("已退回 `100花币`", out)
+        self.assertEqual(se.sql_get_emby(223).iv, 250)
 
     def test_pool_isolation_main_full_open_usable(self):
         """main 池满：主服用户被拒，但无主服号用户仍可占 open 池"""
@@ -376,6 +485,7 @@ class CodeTests(unittest.TestCase):
         ok, out = open_account(FakeCall(444), "test", "t_f", None, "1", copied=False)
         self.assertTrue(ok, out)
         self.assertEqual(svc.calls[0][2], 30)
+        self.assertIn("已使用 `30 天` 开号资格", out)
         a2 = sx.xacc_get("test", 444)
         self.assertEqual(int(a2.us), 0)
         self.assertIsNotNone(a2.embyid)
@@ -420,6 +530,12 @@ class CodeTests(unittest.TestCase):
 # ---------------- 管理面板入口 ----------------
 
 class AdminPanelEntryTests(unittest.TestCase):
+    def test_name_prefix_validator_allows_default_and_enforces_length(self):
+        validator = xa._SET_HINTS["name_prefix"][2]
+
+        self.assertTrue(validator("t_"))
+        self.assertIn("8字符", validator("123456789"))
+
     def test_command_sends_panel_before_deleting_request(self):
         setup_server()
         msg = FakeMsg(1, "/xspanel", "admin")
