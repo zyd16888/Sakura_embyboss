@@ -132,6 +132,11 @@ def open_account(call, sid, name, pwd, pwd2, copied=True):
     return run(xp._occupy_and_open(call, sid, name, pwd, pwd2, copied=copied))
 
 
+def group_notices():
+    return [item[1] for item in captured
+            if item[0] == "send" and len(item) > 3 and item[3] is True]
+
+
 # ---------------- 资格矩阵 ----------------
 
 class EligibilityTests(unittest.TestCase):
@@ -213,18 +218,39 @@ class UserPanelDisplayTests(unittest.TestCase):
 class OpenFlowTests(unittest.TestCase):
     def test_quick_copy_credentials(self):
         setup_server()
-        add_main(111, name="alice", pwd="pw123", pwd2="9999")
+        add_main(111, name="alice", pwd="SecretPass!", pwd2="SafeCode987")
         svc = FakeService()
         patch_service(svc)
-        ok, out = open_account(FakeCall(111), "test", "t_alice", "pw123", "9999")
+        ok, out = open_account(
+            FakeCall(111), "test", "t_alice", "SecretPass!", "SafeCode987")
         self.assertTrue(ok, out)
-        self.assertEqual(svc.calls[0], ("create", "t_alice", 15, "pw123"))
+        self.assertEqual(svc.calls[0], ("create", "t_alice", 15, "SecretPass!"))
         a = sx.xacc_get("test", 111)
-        self.assertEqual((a.name, a.pwd, a.pwd2, a.lv), ("t_alice", "pw123", "9999", "b"))
+        self.assertEqual((a.name, a.pwd, a.pwd2, a.lv),
+                         ("t_alice", "SecretPass!", "SafeCode987", "b"))
         self.assertEqual(sx.xquota_get("test").used, 1)
         self.assertIn("开号成功", out)
         self.assertIn("本次有效期 | `15 天`", out)
         self.assertIn("开通方式 | 免费", out)
+        notices = group_notices()
+        self.assertEqual(notices, [
+            "🎉 恭喜 [这位小伙伴](tg://user?id=111) 成功开通「测试服」账号！"
+        ])
+        self.assertNotIn("\n", notices[0])
+        self.assertNotIn("t_alice", notices[0])
+        self.assertNotIn("SecretPass!", notices[0])
+        self.assertNotIn("SafeCode987", notices[0])
+
+    def test_failed_open_does_not_send_group_notice(self):
+        setup_server()
+        add_main(119, name="failed")
+        patch_service(FakeService(create_ok=False))
+
+        ok, _ = open_account(
+            FakeCall(119), "test", "t_failed", "SecretPass!", "SafeCode987")
+
+        self.assertFalse(ok)
+        self.assertEqual(group_notices(), [])
 
     def test_quick_open_previews_terms_without_creating(self):
         setup_server(allow_reopen=False)
@@ -438,10 +464,16 @@ class OpenFlowTests(unittest.TestCase):
         patch_service(svc)
         open_account(FakeCall(111), "test", "t_alice", "pw", "9")
         self.assertEqual(sx.xquota_get("test").used, 1)
+        captured.clear()
         run(xp.xs_del_confirm(None, FakeCall(111, "xs:dc:" + xp._enc("test"))))
         self.assertEqual(svc.deleted, ["ID-t_alice"])
         self.assertIsNone(sx.xacc_get("test", 111))
         self.assertEqual(sx.xquota_get("test").used, 0)
+        self.assertEqual(group_notices(), [
+            "🗑️ [这位小伙伴](tg://user?id=111) 的「测试服」账号已删除"
+            "（用户主动注销），名额已释放。"
+        ])
+        self.assertNotIn("t_alice", group_notices()[0])
 
 
 # ---------------- 注册码 ----------------
@@ -574,6 +606,23 @@ class AdminPanelEntryTests(unittest.TestCase):
         self.assertEqual(svc.deleted, [])
         self.assertTrue(any("避免遗留远端账号" in str(item) for item in captured))
 
+    def test_remove_command_sends_sanitized_group_notice(self):
+        setup_server()
+        add_main(2004, name="remove-success")
+        svc = FakeService()
+        patch_service(svc)
+        open_account(FakeCall(2004), "test", "t_remove_success", "pw", "9")
+        captured.clear()
+
+        run(xa.xs_admin_remove(None, FakeMsg(1, "/xsrm 2004", "admin")))
+
+        self.assertEqual(svc.deleted, ["ID-t_remove_success"])
+        self.assertEqual(group_notices(), [
+            "🗑️ [这位小伙伴](tg://user?id=2004) 的「测试服」账号已删除"
+            "（管理员删除），名额已释放。"
+        ])
+        self.assertNotIn("t_remove_success", group_notices()[0])
+
     def test_panel_delete_requires_confirmation(self):
         setup_server()
         add_main(2003, name="delete-user")
@@ -588,11 +637,17 @@ class AdminPanelEntryTests(unittest.TestCase):
         self.assertEqual(svc.deleted, [])
         self.assertTrue(any("确认删除测试服账号" in str(item) for item in captured))
 
+        captured.clear()
         run(xa.xs_admin_delete_cb(None, FakeCall(1, f"xsa:oxc:{sid_hex}:2003")))
 
         self.assertIsNone(sx.xacc_get("test", 2003))
         self.assertEqual(svc.deleted, ["ID-t_delete"])
         self.assertEqual(sx.xquota_get("test").used, 0)
+        self.assertEqual(group_notices(), [
+            "🗑️ [这位小伙伴](tg://user?id=2003) 的「测试服」账号已删除"
+            "（管理员删除），名额已释放。"
+        ])
+        self.assertNotIn("t_delete", group_notices()[0])
 
 
 # ---------------- 到期任务 ----------------
@@ -606,10 +661,16 @@ class ExpiryTests(unittest.TestCase):
         open_account(FakeCall(777), "test", "t_ivy", "pw", "9")
         self.assertEqual(sx.xquota_get("test").used, 1)
         sx.xacc_update("test", 777, ex=datetime.now() - timedelta(minutes=1))
+        captured.clear()
         run(xserver_ex.check_xserver_expired())
         self.assertEqual(svc.deleted, ["ID-t_ivy"])
         self.assertIsNone(sx.xacc_get("test", 777))
         self.assertEqual(sx.xquota_get("test").used, 0)
+        self.assertEqual(group_notices(), [
+            "🗑️ [这位小伙伴](tg://user?id=777) 的「测试服」账号已删除"
+            "（到期自动删除），名额已释放。"
+        ])
+        self.assertNotIn("t_ivy", group_notices()[0])
 
     def test_grant_pending_row_not_touched(self):
         """仅有资格（embyid None, ex None）的行不受到期任务影响、不回收名额"""
@@ -724,11 +785,17 @@ class CascadeTests(unittest.TestCase):
         svc, tg = self._open_main_pool()
         se.sql_update_emby(se.Emby.tg == tg, embyid=None, name=None, pwd=None,
                            pwd2=None, lv='d', cr=None, ex=None)   # 模拟 delme/rmemby 清空
+        captured.clear()
         run(xserver_ex.check_xserver_expired())
         self.assertEqual(svc.deleted, [f"ID-t_leo"])
         self.assertIsNone(sx.xacc_get("test", tg))
         q = sx.xquota_get("test")
         self.assertEqual((q.used, q.used_open), (0, 0))  # main 池名额退回
+        self.assertEqual(group_notices(), [
+            f"🗑️ [这位小伙伴](tg://user?id={tg}) 的「测试服」账号已删除"
+            "（主服账号清理后同步删除），名额已释放。"
+        ])
+        self.assertNotIn("t_leo", group_notices()[0])
 
     def test_main_banned_cascades_disable_only(self):
         svc, tg = self._open_main_pool(1102, "monk")
@@ -786,9 +853,11 @@ class CascadeTests(unittest.TestCase):
         svc.x_delete = fail_delete
         svc.user = alive_user
         se.sql_update_emby(se.Emby.tg == tg, embyid=None, lv='d')
+        captured.clear()
         run(xserver_ex.check_xserver_expired())
         self.assertIsNotNone(sx.xacc_get("test", tg))           # 保留待下轮重试
         self.assertEqual(sx.xquota_get("test").used, 1)         # 名额未退
+        self.assertEqual(group_notices(), [])
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from typing import Dict, Optional, Tuple, Union
 
 from bot import config, LOGGER
 from bot.func_helper.emby import Embyservice, create_policy, pwd_policy
+from bot.func_helper.msg_utils import sendMessage
 from bot.func_helper.utils import pwd_create
 from bot.schemas import Xserver
 
@@ -137,3 +138,26 @@ def enabled_servers() -> list:
 def xserver_lines() -> str:
     """给用户展示的线路文本（所有启用的扩展服务器）"""
     return '\n'.join(f"{xc.name} | {xc.line}" for xc in enabled_servers())
+
+
+async def notify_xserver_opened(xc: Xserver, tg: int):
+    """向主授权群发送脱敏的测试服开号通知。"""
+    text = f'🎉 恭喜 [这位小伙伴](tg://user?id={tg}) 成功开通「{xc.name}」账号！'
+    await _send_group_notice(text, tg)
+
+
+async def notify_xserver_deleted(xc: Xserver, tg: int, reason: str):
+    """向主授权群发送脱敏的测试服删号通知。"""
+    text = (f'🗑️ [这位小伙伴](tg://user?id={tg}) 的「{xc.name}」账号已删除'
+            f'（{reason}），名额已释放。')
+    await _send_group_notice(text, tg)
+
+
+async def _send_group_notice(text: str, tg: int):
+    """群通知失败不反向影响账号事务。"""
+    try:
+        result = await sendMessage(None, text, send=True)
+        if isinstance(result, str):
+            LOGGER.warning(f'【xserver群通知】发送失败 tg={tg}: {result}')
+    except Exception as e:
+        LOGGER.warning(f'【xserver群通知】发送异常 tg={tg}: {e}')

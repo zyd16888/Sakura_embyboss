@@ -12,7 +12,8 @@ xserver 到期检测 + 主服软级联。每小时跑一次（schedall.xserver_c
 from datetime import datetime
 
 from bot import bot, LOGGER
-from bot.func_helper.xserver import enabled_servers, get_service
+from bot.func_helper.xserver import (enabled_servers, get_service,
+                                     notify_xserver_deleted)
 from bot.sql_helper.sql_emby import sql_get_emby
 from bot.sql_helper.sql_xserver import (xacc_all, xacc_delete, xacc_expired_rows,
                                         xacc_update, xquota_give, POOL_MAIN)
@@ -41,6 +42,7 @@ async def _purge(svc, xc, a, reason: str, notice: str) -> bool:
         await bot.send_message(a.tg, notice)
     except Exception as e:
         LOGGER.warning(f'【xserver{reason}】通知用户失败 {a.tg}: {e}')
+    await notify_xserver_deleted(xc, a.tg, reason)
     return True
 
 
@@ -62,7 +64,7 @@ async def _expire_pass(servers):
         rows = xacc_expired_rows(xc.id, now)
         for a in rows:
             # DAO 保证返回行必有 embyid（到期行 / 已建号无期限的半成品）
-            await _purge(svc, xc, a, '到期检测',
+            await _purge(svc, xc, a, '到期自动删除',
                          f'🧪 你的 {xc.name} 测试账号 `{a.name}` 已到期删除，'
                          f'名额已释放。欢迎下次再来体验～')
 
@@ -80,7 +82,7 @@ async def _cascade_pass(servers):
                 continue  # open 池体验用户与主服无关
             main = sql_get_emby(a.tg)
             if main is None or not main.embyid:
-                await _purge(svc, xc, a, '主服级联',
+                await _purge(svc, xc, a, '主服账号清理后同步删除',
                              f'🧪 你的主服账号已被删除/清理，{xc.name} 测试账号 '
                              f'`{a.name}` 已同步删除，名额已释放。')
             elif main.lv == 'c' and a.lv == 'b':

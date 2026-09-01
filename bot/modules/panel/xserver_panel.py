@@ -25,7 +25,8 @@ from bot.func_helper.concurrency import get_user_lock
 from bot.func_helper.filters import user_in_group_on_filter
 from bot.func_helper.msg_utils import callAnswer, editMessage, sendMessage, ask_return
 from bot.func_helper.utils import pwd_create
-from bot.func_helper.xserver import get_service, enabled_servers
+from bot.func_helper.xserver import (get_service, enabled_servers,
+                                     notify_xserver_opened, notify_xserver_deleted)
 from bot.schemas import Xserver
 from bot.sql_helper.sql_emby import sql_get_emby, sql_update_emby, Emby
 from bot.sql_helper.sql_xserver import (xacc_get, xacc_get_any, xacc_add, xacc_update,
@@ -417,6 +418,7 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
                            _rollback_notice(kind, cost, days, rollback_ok))
         LOGGER.info(f'【xserver】开号(收编/{pool}) {xc.name} {want_name} -> tg={tg} '
                     f'kind={kind} days={days} cost={cost if kind == "points" else 0}')
+        await notify_xserver_opened(xc, tg)
         return True, _success_text(xc, want_name, want_pwd, want_pwd2, ex, copied=False,
                                    kind=kind, cost=cost, balance_before=balance_before,
                                    days=days)
@@ -437,6 +439,7 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
                        _rollback_notice(kind, cost, days, rollback_ok))
     LOGGER.info(f'【xserver】开号({pool}) {xc.name} {want_name} -> tg={tg} '
                 f'kind={kind} days={days} cost={cost if kind == "points" else 0}')
+    await notify_xserver_opened(xc, tg)
     return True, _success_text(xc, want_name, pwd, want_pwd2, ex, copied,
                                kind=kind, cost=cost, balance_before=balance_before,
                                days=days)
@@ -610,6 +613,9 @@ async def xs_del_confirm(_, call):
         xacc_delete(sid, tg)
         xquota_give(sid, a.pool or POOL_MAIN)
         name = a.name
+        xc = _xc_of(sid)
+        if xc is not None:
+            await notify_xserver_deleted(xc, tg, '用户主动注销')
     await editMessage(call, f"**✅ 已注销 `{name}`，名额已回收。**",
                       buttons=ikb([[('🔙 返回', f'xs:h:{_enc(sid)}')]]))
     LOGGER.info(f'【xserver】注销 {sid} {name} -> tg={tg}')

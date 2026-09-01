@@ -26,7 +26,8 @@ from bot.func_helper.filters import admins_on_filter
 from bot.func_helper.msg_utils import (callAnswer, editMessage, sendMessage,
                                        ask_return, deleteMessage)
 from bot.func_helper.utils import pwd_create, split_long_message
-from bot.func_helper.xserver import get_service, enabled_servers
+from bot.func_helper.xserver import (get_service, enabled_servers,
+                                     notify_xserver_deleted)
 from bot.sql_helper.sql_emby import sql_get_emby
 from bot.sql_helper.sql_xserver import (xacc_get, xacc_get_any, xacc_all, xacc_update,
                                         xacc_delete, xacc_grant, xquota_get,
@@ -582,6 +583,8 @@ async def xs_admin_remove(_, msg):
         LOGGER.warning(f'【xserver管理】删除 {sid}/{a.name} 后名额计数未减少：{pool}')
     name = a.name or str(a.tg)
     LOGGER.info(f'【xserver管理】{msg.from_user.id} 删除 {sid}/{name}，名额已退回{POOL_LABEL[pool]}')
+    if a.embyid and xc is not None:
+        await notify_xserver_deleted(xc, a.tg, '管理员删除')
     await _command_reply(msg, f'✅ 已删除 `{name}`（{xc.name if xc else sid}），'
                               f'名额已退回{POOL_LABEL[pool]}')
     try:
@@ -732,5 +735,8 @@ async def xs_admin_delete_cb(_, call):
     if not xquota_give(sid, a.pool or POOL_MAIN):
         LOGGER.warning(f'【xserver管理】面板删除 {sid}/{a.name} 后名额计数未减少')
     LOGGER.info(f'【xserver管理】{call.from_user.id} 面板删除 {sid}/{a.name}')
+    xc = _xc_of(sid)
+    if xc is not None:
+        await notify_xserver_deleted(xc, tg, '管理员删除')
     await editMessage(call, f'✅ 已删除 `{a.name}`，名额已退回原池',
                       buttons=ikb([[('📋 列表', f'xsa:li:{sid_hex}:0')]]))
