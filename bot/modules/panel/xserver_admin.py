@@ -32,7 +32,7 @@ from bot.sql_helper.sql_emby import sql_get_emby
 from bot.sql_helper.sql_xserver import (xacc_get, xacc_get_any, xacc_all, xacc_update,
                                         xacc_delete, xacc_grant, xquota_get,
                                         xquota_set_total, xquota_give, xcode_add,
-                                        xcode_unused_of, xquota_pool_used,
+                                        xcode_unused_of, xcode_list, xquota_pool_used,
                                         xquota_pool_total, POOL_MAIN, POOL_OPEN)
 from bot.modules.panel.xserver_panel import _enc, _dec, _xc_of
 
@@ -119,7 +119,8 @@ def _admin_home_ikb(sid: str, xc) -> list:
         [(f'💰 改单价{ch.points_cost}', f'xsa:pc:{eh}'),
          (f'{"🟢" if xc.allow_reopen else "🔴"}允许复开', f'xsa:ro:{eh}'),
          ('⚙️ 参数配置', f'xsa:cfg:{eh}')],
-        [('🎫 开资格码', f'xsa:cr:{eh}'), ('📋 账号列表', f'xsa:li:{eh}:0')],
+        [('🎫 注册码管理', f'xsa:cl:{eh}:reg:unused:0'),
+         ('📋 账号列表', f'xsa:li:{eh}:0')],
         [('🔙 返回', 'manage')],
     ]
 
@@ -467,6 +468,67 @@ async def xs_cmd_renew_code(_, msg):
     result = await _emit_codes(msg, sid, count, days, 'renew')
     await deleteMessage(msg)
     return result
+
+
+# ---------------- 注册码查询（分页） ----------------
+
+@bot.on_callback_query(filters.regex('^xsa:cl:') & admins_on_filter)
+async def xs_admin_code_list(_, call):
+    try:
+        _, _, sid_hex, kind, status, page_s = call.data.split(':')
+        page = int(page_s)
+    except ValueError:
+        return await callAnswer(call, '⚠️ 注册码查询条件无效', True)
+    if kind not in ('reg', 'renew') or status not in ('unused', 'used'):
+        return await callAnswer(call, '⚠️ 注册码查询条件无效', True)
+    sid = _dec(sid_hex)
+    xc = await _xc_any(sid)
+    if xc is None:
+        return await callAnswer(call, '⚠️ 服务器不存在', True)
+
+    is_used = status == 'used'
+    per = 10
+    rows, total = xcode_list(sid, kind, is_used, page, per)
+    total_page = max(1, -(-total // per))
+    valid_page = min(max(page, 0), total_page - 1)
+    if valid_page != page:
+        page = valid_page
+        rows, total = xcode_list(sid, kind, is_used, page, per)
+
+    kind_label = '开号码' if kind == 'reg' else '续期码'
+    status_label = '已使用' if is_used else '未使用'
+    lines = [f'**▎🎫 {xc.name} · {kind_label}**',
+             f'· 状态 | {status_label} · 共 {total} 张 · 第 {page + 1}/{total_page} 页\n']
+    if not rows:
+        lines.append('（暂无符合条件的注册码）')
+    for index, row in enumerate(rows, start=page * per + 1):
+        detail = f'{int(row.us or 0)} 天'
+        if is_used:
+            used_at = row.usedtime.strftime('%Y-%m-%d %H:%M') if row.usedtime else '-'
+            detail += f' · [{row.used}](tg://user?id={row.used}) · {used_at}'
+        lines.append(f'{index}. `{row.code}`\n   {detail}')
+
+    kb = [
+        [(f'{"✅ " if kind == "reg" else ""}开号码',
+          f'xsa:cl:{sid_hex}:reg:{status}:0'),
+         (f'{"✅ " if kind == "renew" else ""}续期码',
+          f'xsa:cl:{sid_hex}:renew:{status}:0')],
+        [(f'{"✅ " if status == "unused" else ""}未使用',
+          f'xsa:cl:{sid_hex}:{kind}:unused:0'),
+         (f'{"✅ " if status == "used" else ""}已使用',
+          f'xsa:cl:{sid_hex}:{kind}:used:0')],
+    ]
+    nav = []
+    if page > 0:
+        nav.append(('⬅️', f'xsa:cl:{sid_hex}:{kind}:{status}:{page - 1}'))
+    if page < total_page - 1:
+        nav.append(('➡️', f'xsa:cl:{sid_hex}:{kind}:{status}:{page + 1}'))
+    if nav:
+        kb.append(nav)
+    kb.append([('➕ 生成开号码', f'xsa:cr:{sid_hex}'),
+               ('🔙 主页', f'xsa:h:{sid_hex}')])
+    await callAnswer(call, f'🎫 {kind_label} · {status_label}')
+    await editMessage(call, '\n'.join(lines), buttons=ikb(kb))
 
 
 # ---------------- 管理命令：查询/发资格/续期/删除 ----------------

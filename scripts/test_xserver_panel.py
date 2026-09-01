@@ -496,8 +496,9 @@ class CodeTests(unittest.TestCase):
         setup_server()
         xc = NS["cfg"].xservers[0]
         xc.channels.main_user = False   # 模拟纯资格用户
-        xc.channels.points = False
+        xc.channels.points = True       # 积分通道开启时，资格仍优先且不扣币
         add_main(444, name="frank", embyid=None, lv="d")
+        balance_before = se.sql_get_emby(444).iv
         self.assertTrue(sx.xcode_add(["T-test-XREG_good"], "test", 1, 30, "reg"))
         handled = run(xcode.xs_redeem_code(FakeMsg(444), "T-test-XREG_good"))
         self.assertTrue(handled)
@@ -521,6 +522,26 @@ class CodeTests(unittest.TestCase):
         a2 = sx.xacc_get("test", 444)
         self.assertEqual(int(a2.us), 0)
         self.assertIsNotNone(a2.embyid)
+        self.assertEqual(se.sql_get_emby(444).iv, balance_before)
+
+    def test_code_list_filters_kind_status_and_pages(self):
+        setup_server()
+        reg_codes = [f"T-test-XREG_{i:02d}" for i in range(12)]
+        self.assertTrue(sx.xcode_add(reg_codes, "test", 1, 30, "reg"))
+        self.assertTrue(sx.xcode_add(["T-test-XRNV_only"], "test", 1, 7, "renew"))
+        self.assertTrue(sx.xcode_redeem(reg_codes[0], 7001)[0])
+        self.assertTrue(sx.xcode_redeem(reg_codes[1], 7002)[0])
+
+        unused, unused_total = sx.xcode_list("test", "reg", False, 0, 5)
+        unused_page_2, _ = sx.xcode_list("test", "reg", False, 1, 5)
+        used, used_total = sx.xcode_list("test", "reg", True, 0, 10)
+        renew, renew_total = sx.xcode_list("test", "renew", False, 0, 10)
+
+        self.assertEqual((unused_total, len(unused), len(unused_page_2)), (10, 5, 5))
+        self.assertTrue(all(row.kind == "reg" and row.used is None for row in unused))
+        self.assertEqual((used_total, {row.used for row in used}), (2, {7001, 7002}))
+        self.assertEqual((renew_total, [row.code for row in renew]),
+                         (1, ["T-test-XRNV_only"]))
 
     def test_renew_code_extends_existing(self):
         setup_server()
@@ -578,6 +599,33 @@ class AdminPanelEntryTests(unittest.TestCase):
         self.assertIn("测试服 · 管理", captured[0][1])
         self.assertEqual(captured[-1], ("delete",))
         self.assertFalse(any(item[0] == "edit" for item in captured))
+
+    def test_code_manager_filters_used_and_unused(self):
+        setup_server()
+        codes = ["T-test-XREG_unused", "T-test-XREG_used"]
+        self.assertTrue(sx.xcode_add(codes, "test", 1, 30, "reg"))
+        self.assertTrue(sx.xcode_redeem(codes[1], 8001)[0])
+        sid_hex = xp._enc("test")
+
+        run(xa.xs_admin_code_list(
+            None, FakeCall(1, f"xsa:cl:{sid_hex}:reg:unused:0")))
+
+        unused_view = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("测试服 · 开号码", unused_view[1])
+        self.assertIn(codes[0], unused_view[1])
+        self.assertNotIn(codes[1], unused_view[1])
+        buttons = [button for row in unused_view[2] for button in row]
+        self.assertIn(("已使用", f"xsa:cl:{sid_hex}:reg:used:0"), buttons)
+        self.assertIn(("➕ 生成开号码", f"xsa:cr:{sid_hex}"), buttons)
+
+        captured.clear()
+        run(xa.xs_admin_code_list(
+            None, FakeCall(1, f"xsa:cl:{sid_hex}:reg:used:0")))
+
+        used_view = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn(codes[1], used_view[1])
+        self.assertNotIn(codes[0], used_view[1])
+        self.assertIn("tg://user?id=8001", used_view[1])
 
     def test_grant_command_replies_before_deleting_request(self):
         setup_server()

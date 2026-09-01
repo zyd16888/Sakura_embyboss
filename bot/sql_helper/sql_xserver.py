@@ -411,3 +411,26 @@ def xcode_unused_of(server_id: str, kind: str = 'reg'):
         except Exception as e:
             LOGGER.error(f"【xserver】code_unused 统计失败: {e}")
             return 0
+
+
+def xcode_list(server_id: str, kind: str, is_used: bool,
+               page: int = 0, page_size: int = 10):
+    """按服务器、码类型和使用状态分页查询，返回 (当前页, 总数)。"""
+    with Session() as session:
+        try:
+            query = session.query(XserverCode).filter(
+                XserverCode.server_id == server_id,
+                XserverCode.kind == kind,
+            )
+            if is_used:
+                query = query.filter(XserverCode.used.isnot(None))
+                query = query.order_by(XserverCode.usedtime.desc(), XserverCode.code.asc())
+            else:
+                query = query.filter(XserverCode.used.is_(None))
+                query = query.order_by(XserverCode.code.asc())
+            total = query.count()
+            rows = query.offset(max(0, page) * page_size).limit(page_size).all()
+            return rows, total
+        except Exception as e:
+            LOGGER.error(f"【xserver】code_list 查询失败 {server_id}/{kind}/{is_used}: {e}")
+            return [], 0
