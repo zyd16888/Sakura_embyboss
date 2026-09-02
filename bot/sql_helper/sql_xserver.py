@@ -363,6 +363,20 @@ def xcode_get(code: str):
             return None
 
 
+def xcode_reg_used_by(server_id: str, tg: int):
+    """用户是否已兑换过开号资格码；查询失败返回 None。"""
+    with Session() as session:
+        try:
+            return session.query(XserverCode).filter(
+                XserverCode.server_id == server_id,
+                XserverCode.kind == 'reg',
+                XserverCode.used == tg,
+            ).first() is not None
+        except Exception as e:
+            LOGGER.error(f"【xserver】code_reg_used 查询失败 {server_id}/{tg}: {e}")
+            return None
+
+
 def xcode_redeem(code: str, tg: int):
     """原子兑换：条件 UPDATE WHERE used IS NULL，rowcount=1 才算抢到。
     :return: ok, server_id, days

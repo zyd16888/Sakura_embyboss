@@ -32,7 +32,7 @@
 
 ## 特别感谢（排序不分先后）<img src="image/bixin.jpg" alt="比心" height=30>
 
-- [Pyrogram • 一个现代、优雅和异步的MTProto API框架](https://github.com/pyrogram/pyrogram)
+- [Pyrofork • 持续维护的 Pyrogram 兼容 MTProto 框架](https://github.com/Mayuri-Chan/pyrofork)
 - [Nezha探针 • 自托管、轻量级、服务器和网站监控运维工具](https://github.com/naiba/nezha)
 - [小宝 • 按钮风格](https://t.me/EmbyClubBot)
 - [MisakaF_Emby • 启发](https://github.com/MisakaFxxk/MisakaF_Emby)

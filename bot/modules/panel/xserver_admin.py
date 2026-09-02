@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 
 from pyrogram import filters
 from pyrogram.types import CallbackQuery
-from pyromod.helpers import ikb
+from pyrogram.helpers import ikb
 
 from bot import bot, prefixes, sakura_b, config, ranks, LOGGER, save_config
 from bot.func_helper.filters import admins_on_filter

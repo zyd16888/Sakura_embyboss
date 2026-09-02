@@ -24,7 +24,7 @@ from bot.sql_helper.sql_partition import (
     sql_clear_all_partition_data,
 )
 from bot.func_helper.utils import pwd_create
-from pyromod.helpers import ikb
+from pyrogram.helpers import ikb
 
 PARTITION_VIEW_PAGE_SIZE = 20
 PARTITION_CREATE_MAX_COUNT = 500
@@ -309,7 +309,7 @@ async def log_out(_, call):
 @bot.on_callback_query(filters.regex("set_tz$") & admins_on_filter)
 async def set_tz(_, call):
     """显示探针设置菜单"""
-    from pyromod.helpers import ikb
+    from pyrogram.helpers import ikb
     await callAnswer(call, '📌 设置探针')
     
     v0_status = '✅' if config.tz_version == 'v0' else '❎'

@@ -7,9 +7,9 @@ import asyncio
 
 from pathlib import Path
 from pyrogram import filters, enums
-from pyrogram.errors import FloodWait, Forbidden, BadRequest, PeerIdInvalid
+from pyrogram.errors import (FloodWait, Forbidden, BadRequest, PeerIdInvalid,
+                             ListenerTimeout)
 from pyrogram.types import CallbackQuery
-from pyromod.exceptions import ListenerTimeout 
 from bot import LOGGER, group, bot
 from typing import Optional
 

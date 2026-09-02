@@ -1,7 +1,7 @@
 from cacheout import Cache
-from pykeyboard import InlineKeyboard, InlineButton
 from pyrogram.types import InlineKeyboardMarkup
-from pyromod.helpers import ikb, array_chunk
+from pyrogram.helpers import ikb, array_chunk
+from bot.func_helper.keyboard import InlineKeyboard, InlineButton
 from bot import chanel, main_group, bot_name, extra_emby_libs, tz_id, tz_ad, tz_api, tz_version, tz_username, tz_password, _open, sakura_b, \
     schedall, auto_update, fuxx_pitao, moviepilot, red_envelope, config, LOGGER
 from bot.func_helper import nezha_res

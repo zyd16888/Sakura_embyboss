@@ -8,7 +8,9 @@
 """
 import json
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,8 @@ os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
 
 os.environ["SAKURA_RUNNING_MIGRATIONS"] = "1"
+SESSION_DIR = Path(tempfile.mkdtemp(prefix="sakura-pyrogram-session-"))
+os.environ["PYROGRAM_WORKDIR"] = str(SESSION_DIR)
 
 import sqlalchemy  # noqa: E402
 from sqlalchemy import create_engine as _real_ce  # noqa: E402
@@ -65,6 +69,10 @@ try:
 
     # main.py 的完整模块图
     from bot import bot  # noqa: E402
+    assert Path(bot.workdir).resolve() == SESSION_DIR.resolve()
+    from pyrogram import utils as pyrogram_utils  # noqa: E402
+    assert pyrogram_utils.get_peer_type(-1002223922785) == "channel"
+    assert hasattr(bot, "listen"), "Pyrofork 未提供内置 listener"
     from bot.modules.panel import *  # noqa: E402
     from bot.modules.commands import *  # noqa: E402
     from bot.modules.extra import *  # noqa: E402
@@ -107,3 +115,4 @@ try:
 finally:
     if _tmp_created:
         CFG_PATH.unlink(missing_ok=True)
+    shutil.rmtree(SESSION_DIR, ignore_errors=True)

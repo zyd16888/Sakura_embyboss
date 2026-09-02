@@ -1,6 +1,8 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
 import contextlib
+import os
+from pathlib import Path
 
 from .func_helper.logger_config import logu, Now
 
@@ -150,13 +152,16 @@ with contextlib.suppress(ImportError):
     import uvloop
 
     uvloop.install()
-from pyrogram import enums
-from pyromod import Client
+from pyrogram import Client, enums
 
 proxy = {} if not config.proxy.scheme else config.proxy.dict()
+session_dir = Path(os.getenv('PYROGRAM_WORKDIR',
+                             '/app/session' if os.getenv('DOCKER_MODE') == '1' else '.'))
+session_dir.mkdir(parents=True, exist_ok=True)
 
 bot = Client(bot_name, api_id=owner_api, api_hash=owner_hash, bot_token=bot_token, proxy=proxy,
              workers=300,
-             max_concurrent_transmissions=1000, parse_mode=enums.ParseMode.MARKDOWN)
+             max_concurrent_transmissions=1000, parse_mode=enums.ParseMode.MARKDOWN,
+             workdir=str(session_dir))
 
 LOGGER.info("Clinet 客户端准备")

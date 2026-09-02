@@ -4,7 +4,7 @@ xserver 离线测试引导：不装 Telegram/MySQL/Emby 也能真实 import 被�
 
 - 以桩 `bot` 包（__path__ 指向真实目录）注入全局名，
   真实 bot.schemas / bot.sql_helper.* / bot.func_helper.xserver 可导入；
-- 以桩 pyrogram/pyromod + bot.func_helper.filters/msg_utils 捕获面板逻辑；
+- 以桩 pyrogram + bot.func_helper.filters/msg_utils 捕获面板逻辑；
 - sqlite 内存库同时挂到 sql_xserver.Session 与 sql_emby.Session。
 """
 import os
@@ -128,7 +128,7 @@ def boot():
     bot_stub.proxy = types.SimpleNamespace(scheme="", dict=lambda: {})
     sys.modules["bot"] = bot_stub
 
-    # pyrogram / pyromod 桩（面板装饰器与按钮构建）
+    # pyrogram 桩（面板装饰器与按钮构建）
     filters_stub = types.SimpleNamespace(regex=_regex, command=_command, user=_user,
                                          private=_Filter('private'),
                                          create=lambda f: _Filter('create'))
@@ -152,23 +152,16 @@ def boot():
     pyrogram_stub.errors.FloodWait = type("FloodWait", (Exception,), {})
     pyrogram_stub.errors.Forbidden = type("Forbidden", (Exception,), {})
     pyrogram_stub.errors.PeerIdInvalid = type("PeerIdInvalid", (Exception,), {})
+    pyrogram_stub.errors.ListenerTimeout = type("ListenerTimeout", (Exception,), {})
+    helpers = types.ModuleType("pyrogram.helpers")
+    helpers.ikb = lambda rows, **k: rows
+    helpers.array_chunk = lambda lst, n: [lst[i:i + n] for i in range(0, len(lst), n)]
     sys.modules["pyrogram"] = pyrogram_stub
     sys.modules["pyrogram.filters"] = filters_stub
     sys.modules["pyrogram.types"] = pyrogram_stub.types
     sys.modules["pyrogram.errors"] = pyrogram_stub.errors
     sys.modules["pyrogram.enums"] = pyrogram_stub.enums
-
-    pyromod_stub = types.ModuleType("pyromod")
-    helpers = types.ModuleType("pyromod.helpers")
-    helpers.ikb = lambda rows, **k: rows
-    helpers.array_chunk = lambda lst, n: [lst[i:i + n] for i in range(0, len(lst), n)]
-    pyromod_stub.helpers = helpers
-    exc = types.ModuleType("pyromod.exceptions")
-    exc.ListenerTimeout = type("ListenerTimeout", (Exception,), {})
-    pyromod_stub.exceptions = exc
-    sys.modules["pyromod"] = pyromod_stub
-    sys.modules["pyromod.helpers"] = helpers
-    sys.modules["pyromod.exceptions"] = exc
+    sys.modules["pyrogram.helpers"] = helpers
 
     # func_helper.filters / msg_utils 桩
     fh_stub = types.ModuleType("bot.func_helper")

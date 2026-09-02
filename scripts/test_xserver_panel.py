@@ -155,6 +155,7 @@ class EligibilityTests(unittest.TestCase):
         xc.channels.main_user = False
         xc.channels.whitelist = True
         self.assertEqual(xp._eligibility(xc, main_wl, None), ('free', 0))
+        # 关闭一键只禁用 quick 路径；积分仍可供单独开号使用
         self.assertEqual(xp._eligibility(xc, main_ok, None), ('points', 100))
 
         xc.channels.points = False
@@ -211,6 +212,20 @@ class UserPanelDisplayTests(unittest.TestCase):
             buttons,
         )
         self.assertFalse(any(data.startswith(("xs:c:", "xs:q:")) for _, data in buttons))
+
+    def test_main_user_off_hides_quick_but_keeps_paid_manual_open(self):
+        xc = setup_server()
+        xc.channels.main_user = False
+        add_main(120, name="manual", iv=250)
+        patch_service(FakeService())
+
+        run(xp.xs_home_show(None, FakeCall(120), "test"))
+
+        panel = next(item for item in reversed(captured) if item[0] == "edit")
+        buttons = [button for row in panel[2] for button in row]
+        self.assertFalse(any(data.startswith("xs:q:") for _, data in buttons))
+        manual = next((label, data) for label, data in buttons if data.startswith("xs:c:"))
+        self.assertIn("100花币", manual[0])
 
 
 # ---------------- 开号流程 ----------------
@@ -270,9 +285,8 @@ class OpenFlowTests(unittest.TestCase):
         self.assertIn("每人一次", preview[1])
         self.assertIn(("✅ 确认开号", f"xs:qc:{xp._enc('test')}"), preview[2][0])
 
-    def test_quick_confirm_reports_points_charge_and_processing(self):
-        xc = setup_server()
-        xc.channels.main_user = False
+    def test_quick_confirm_enabled_is_free_and_reports_processing(self):
+        setup_server()
         add_main(118, name="paid", iv=250)
         svc = FakeService()
         patch_service(svc)
@@ -281,12 +295,64 @@ class OpenFlowTests(unittest.TestCase):
         self.assertEqual(se.sql_get_emby(118).iv, 250)
         run(xp.xs_quick_confirm(None, FakeCall(118, f"xs:qc:{xp._enc('test')}")))
 
-        self.assertEqual(se.sql_get_emby(118).iv, 150)
+        self.assertEqual(se.sql_get_emby(118).iv, 250)
         self.assertEqual(svc.calls[0][:3], ("create", "t_paid", 15))
         edits = [item for item in captured if item[0] == "edit"]
         self.assertTrue(any("正在创建" in item[1] for item in edits))
-        self.assertIn("已扣 `100`", edits[-1][1])
-        self.assertIn("余额 `250 → 150`", edits[-1][1])
+        self.assertIn("开通方式 | 免费", edits[-1][1])
+
+    def test_quick_entry_rejects_when_main_user_is_off(self):
+        xc = setup_server()
+        xc.channels.main_user = False
+        add_main(121, name="closed", iv=250)
+        svc = FakeService()
+        patch_service(svc)
+
+        run(xp.xs_quick(None, FakeCall(121, f"xs:q:{xp._enc('test')}")))
+
+        self.assertEqual(svc.calls, [])
+        self.assertIsNone(sx.xacc_get("test", 121))
+        self.assertEqual(se.sql_get_emby(121).iv, 250)
+        self.assertEqual(sx.xquota_get("test").used, 0)
+        self.assertIn("已关闭主服一键开号", captured[-1][1])
+
+    def test_stale_quick_confirmation_rechecks_main_user_switch(self):
+        xc = setup_server()
+        add_main(122, name="stale", iv=250)
+        svc = FakeService()
+        patch_service(svc)
+        run(xp.xs_quick(None, FakeCall(122, f"xs:q:{xp._enc('test')}")))
+        xc.channels.main_user = False
+        captured.clear()
+
+        run(xp.xs_quick_confirm(None, FakeCall(122, f"xs:qc:{xp._enc('test')}")))
+
+        self.assertEqual(svc.calls, [])
+        self.assertIsNone(sx.xacc_get("test", 122))
+        self.assertEqual(se.sql_get_emby(122).iv, 250)
+        self.assertEqual(sx.xquota_get("test").used, 0)
+        result = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("未扣除积分或占用名额", result[1])
+        result_buttons = [button for row in result[2] for button in row]
+        self.assertFalse(any(data.startswith("xs:q:") for _, data in result_buttons))
+
+    def test_quick_settlement_guard_blocks_points_fallback(self):
+        xc = setup_server()
+        xc.channels.main_user = False
+        add_main(123, name="guard", iv=250)
+        svc = FakeService()
+        patch_service(svc)
+
+        ok, out = run(xp._occupy_and_open(
+            FakeCall(123), "test", "t_guard", "pw", "9", copied=True,
+            require_main_user=True))
+
+        self.assertFalse(ok)
+        self.assertIn("未扣除积分或占用名额", out)
+        self.assertEqual(svc.calls, [])
+        self.assertIsNone(sx.xacc_get("test", 123))
+        self.assertEqual(se.sql_get_emby(123).iv, 250)
+        self.assertEqual(sx.xquota_get("test").used, 0)
 
     def test_create_accepts_default_underscore_prefix(self):
         xc = setup_server()
@@ -543,6 +609,55 @@ class CodeTests(unittest.TestCase):
         self.assertEqual((renew_total, [row.code for row in renew]),
                          (1, ["T-test-XRNV_only"]))
 
+    def test_reg_code_is_limited_to_one_per_user_and_server(self):
+        setup_server()
+        add_main(668, name="single-reg", embyid=None, lv="d")
+        codes = ["T-test-XREG_first", "T-test-XREG_second"]
+        self.assertTrue(sx.xcode_add(codes, "test", 1, 10, "reg"))
+
+        self.assertTrue(run(xcode.xs_redeem_code(FakeMsg(668), codes[0])))
+        self.assertTrue(sx.xacc_delete("test", 668))  # 资格行消失后历史限制仍需生效
+        captured.clear()
+        self.assertTrue(run(xcode.xs_redeem_code(FakeMsg(668), codes[1])))
+
+        self.assertIsNone(sx.xacc_get("test", 668))
+        self.assertEqual(sx.xcode_get(codes[0]).used, 668)
+        self.assertIsNone(sx.xcode_get(codes[1]).used)
+        self.assertTrue(any("每个用户在每个测试服仅限使用一张" in str(item)
+                            for item in captured))
+
+    def test_reg_code_limit_is_scoped_per_server(self):
+        setup_server()
+        add_main(669, name="multi-server", embyid=None, lv="d")
+        code_a = "T-test-XREG_server_a"
+        code_b = "T-test2-XREG_server_b"
+        self.assertTrue(sx.xcode_add([code_a], "test", 1, 5, "reg"))
+        self.assertTrue(sx.xcode_add([code_b], "test2", 1, 8, "reg"))
+
+        self.assertTrue(run(xcode.xs_redeem_code(FakeMsg(669), code_a)))
+        self.assertTrue(run(xcode.xs_redeem_code(FakeMsg(669), code_b)))
+
+        self.assertEqual(int(sx.xacc_get("test", 669).us), 5)
+        self.assertEqual(int(sx.xacc_get("test2", 669).us), 8)
+
+    def test_concurrent_reg_code_redemption_only_consumes_one(self):
+        setup_server()
+        add_main(670, name="concurrent-reg", embyid=None, lv="d")
+        codes = ["T-test-XREG_race_a", "T-test-XREG_race_b"]
+        self.assertTrue(sx.xcode_add(codes, "test", 1, 9, "reg"))
+
+        async def redeem_both():
+            return await asyncio.gather(
+                xcode.xs_redeem_code(FakeMsg(670), codes[0]),
+                xcode.xs_redeem_code(FakeMsg(670), codes[1]),
+            )
+
+        self.assertEqual(run(redeem_both()), [True, True])
+        used = [sx.xcode_get(code).used for code in codes]
+        self.assertEqual(used.count(670), 1)
+        self.assertEqual(used.count(None), 1)
+        self.assertEqual(int(sx.xacc_get("test", 670).us), 9)
+
     def test_renew_code_extends_existing(self):
         setup_server()
         add_main(555, name="grace")
@@ -563,6 +678,18 @@ class CodeTests(unittest.TestCase):
         self.assertIsNotNone(a)
         self.assertEqual(int(a.us), 7)  # 转为资格，码不浪费
 
+    def test_renew_codes_can_be_used_multiple_times(self):
+        setup_server()
+        add_main(671, name="multi-renew", embyid=None, lv="d")
+        codes = ["T-test-XRNV_first", "T-test-XRNV_second"]
+        self.assertTrue(sx.xcode_add(codes, "test", 1, 6, "renew"))
+
+        self.assertTrue(run(xcode.xs_redeem_code(FakeMsg(671), codes[0])))
+        self.assertTrue(run(xcode.xs_redeem_code(FakeMsg(671), codes[1])))
+
+        self.assertEqual(int(sx.xacc_get("test", 671).us), 12)
+        self.assertTrue(all(sx.xcode_get(code).used == 671 for code in codes))
+
     def test_credit_failure_restores_code(self):
         setup_server()
         add_main(667, name="ida", embyid=None, lv="d")
@@ -578,6 +705,10 @@ class CodeTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertIsNone(sx.xcode_get(code).used)
         self.assertTrue(any("注册码未消耗" in str(item) for item in captured))
+        captured.clear()
+        self.assertTrue(run(xcode.xs_redeem_code(FakeMsg(667), code)))
+        self.assertEqual(sx.xcode_get(code).used, 667)
+        self.assertEqual(int(sx.xacc_get("test", 667).us), 7)
 
 
 # ---------------- 管理面板入口 ----------------

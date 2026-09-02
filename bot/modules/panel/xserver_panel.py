@@ -18,7 +18,7 @@ import re
 from datetime import datetime, timedelta
 
 from pyrogram import filters
-from pyromod.helpers import ikb
+from pyrogram.helpers import ikb
 
 from bot import bot, sakura_b, config, LOGGER
 from bot.func_helper.concurrency import get_user_lock
@@ -242,7 +242,7 @@ async def xs_home_show(_, call, sid: str, answer: bool = True):
                 buttons.append([(f'🚫 {sakura_b}不足 · 需要 {cost}（持有 {balance}）',
                                  f'xs:h:{_enc(sid)}')])
             else:
-                if main and main.embyid:
+                if main and main.embyid and xc.channels.main_user:
                     buttons.append([(f'🚀 一键开号{_fmt_offer(xc, kind, cost, a)}',
                                      f'xs:q:{_enc(sid)}')])
                 buttons.append([(f'📝 单独开号{_fmt_offer(xc, kind, cost, a)}',
@@ -326,17 +326,22 @@ def _success_text(xc: Xserver, name, pwd, pwd2, ex, copied: bool,
 
 
 async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: str,
-                           copied: bool):
+                           copied: bool, require_main_user: bool = False):
     """
     占名额（按主服状态选池）→ 判定通道/扣资源 → 建号（或收编远端残留同名号）→ 落库。
     调用方需已持有该用户的 user_lock。
     :param want_pwd: None 则随机生成
+    :param require_main_user: 一键开号专用，结算前强制复核主服一键开关
     :return: (ok, 成功文案或失败原因)
     """
     tg = call.from_user.id
     xc = _xc_of(sid)
+    if xc is None:
+        return False, '⚠️ 该服务器未开放'
+    if require_main_user and not xc.channels.main_user:
+        return False, '🚫 管理员已关闭主服一键开号，本次未扣除积分或占用名额。'
     svc = get_service(sid)
-    if xc is None or svc is None:
+    if svc is None:
         return False, '⚠️ 该服务器未开放'
 
     main = sql_get_emby(tg)
@@ -453,6 +458,8 @@ async def xs_quick(_, call):
     xc = _xc_of(sid)
     if xc is None:
         return await callAnswer(call, '⚠️ 该服务器未开放', True)
+    if not xc.channels.main_user:
+        return await callAnswer(call, '🚫 管理员已关闭主服一键开号', True)
     tg = call.from_user.id
     main = sql_get_emby(tg)
     if not main or not main.embyid:
@@ -490,6 +497,13 @@ async def xs_quick_confirm(_, call):
     xc = _xc_of(sid)
     if xc is None:
         return await callAnswer(call, '⚠️ 该服务器未开放', True)
+    if not xc.channels.main_user:
+        await callAnswer(call, '🚫 管理员已关闭主服一键开号', True)
+        return await editMessage(
+            call,
+            '🚫 管理员已关闭主服一键开号，本次未扣除积分或占用名额。',
+            buttons=_result_buttons(sid),
+        )
     await callAnswer(call, '⏳ 正在创建账号')
     tg = call.from_user.id
     async with get_user_lock(tg):
@@ -498,6 +512,8 @@ async def xs_quick_confirm(_, call):
             ok, out = False, '💦 你在主服还没有账号，请走【单独开号】'
         elif main.lv not in ('a', 'b'):
             ok, out = False, '🚫 主服账号状态异常（未激活/已封禁），无法一键开号'
+        elif not xc.channels.main_user:
+            ok, out = False, '🚫 管理员已关闭主服一键开号，本次未扣除积分或占用名额。'
         else:
             want_name = f"{xc.name_prefix}{main.name}"
             await editMessage(call, f'**⏳ 正在创建 {xc.name}账号**\n\n'
@@ -506,8 +522,9 @@ async def xs_quick_confirm(_, call):
             want_pwd = main.pwd if main.pwd else None
             want_pwd2 = main.pwd2 if main.pwd2 else await pwd_create(4)
             ok, out = await _occupy_and_open(call, sid, want_name, want_pwd, want_pwd2,
-                                             copied=bool(main.pwd))
-    await editMessage(call, out, buttons=_result_buttons(sid, None if ok else 'q'))
+                                             copied=bool(main.pwd), require_main_user=True)
+    retry = 'q' if (not ok and xc.channels.main_user) else None
+    await editMessage(call, out, buttons=_result_buttons(sid, retry))
 
 
 # ---------------- 单独开号 ----------------
