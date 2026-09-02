@@ -423,7 +423,7 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
                            _rollback_notice(kind, cost, days, rollback_ok))
         LOGGER.info(f'【xserver】开号(收编/{pool}) {xc.name} {want_name} -> tg={tg} '
                     f'kind={kind} days={days} cost={cost if kind == "points" else 0}')
-        await notify_xserver_opened(xc, tg)
+        await notify_xserver_opened(xc, tg, call.from_user.first_name)
         return True, _success_text(xc, want_name, want_pwd, want_pwd2, ex, copied=False,
                                    kind=kind, cost=cost, balance_before=balance_before,
                                    days=days)
@@ -444,7 +444,7 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
                        _rollback_notice(kind, cost, days, rollback_ok))
     LOGGER.info(f'【xserver】开号({pool}) {xc.name} {want_name} -> tg={tg} '
                 f'kind={kind} days={days} cost={cost if kind == "points" else 0}')
-    await notify_xserver_opened(xc, tg)
+    await notify_xserver_opened(xc, tg, call.from_user.first_name)
     return True, _success_text(xc, want_name, pwd, want_pwd2, ex, copied,
                                kind=kind, cost=cost, balance_before=balance_before,
                                days=days)

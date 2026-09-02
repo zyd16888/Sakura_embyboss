@@ -140,9 +140,9 @@ def xserver_lines() -> str:
     return '\n'.join(f"{xc.name} | {xc.line}" for xc in enabled_servers())
 
 
-async def notify_xserver_opened(xc: Xserver, tg: int):
+async def notify_xserver_opened(xc: Xserver, tg: int, first_name: str):
     """向主授权群发送脱敏的测试服开号通知。"""
-    text = f'🎉 恭喜 [这位小伙伴](tg://user?id={tg}) 成功开通「{xc.name}」账号！'
+    text = f'🎉 恭喜 [{first_name}](tg://user?id={tg}) 成功开通「{xc.name}」账号！'
     await _send_group_notice(text, tg)
 
 

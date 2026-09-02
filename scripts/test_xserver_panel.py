@@ -39,8 +39,8 @@ class FakeUser:
 
 
 class FakeCall:
-    def __init__(self, uid, data="x"):
-        self.from_user = FakeUser(uid)
+    def __init__(self, uid, data="x", name="u"):
+        self.from_user = FakeUser(uid, name)
         self.data = data
         self.message = None
 
@@ -237,7 +237,7 @@ class OpenFlowTests(unittest.TestCase):
         svc = FakeService()
         patch_service(svc)
         ok, out = open_account(
-            FakeCall(111), "test", "t_alice", "SecretPass!", "SafeCode987")
+            FakeCall(111, name="Alice"), "test", "t_alice", "SecretPass!", "SafeCode987")
         self.assertTrue(ok, out)
         self.assertEqual(svc.calls[0], ("create", "t_alice", 15, "SecretPass!"))
         a = sx.xacc_get("test", 111)
@@ -249,7 +249,7 @@ class OpenFlowTests(unittest.TestCase):
         self.assertIn("开通方式 | 免费", out)
         notices = group_notices()
         self.assertEqual(notices, [
-            "🎉 恭喜 [这位小伙伴](tg://user?id=111) 成功开通「测试服」账号！"
+            "🎉 恭喜 [Alice](tg://user?id=111) 成功开通「测试服」账号！"
         ])
         self.assertNotIn("\n", notices[0])
         self.assertNotIn("t_alice", notices[0])
