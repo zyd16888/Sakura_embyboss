@@ -1,6 +1,6 @@
 import json
 import os
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Dict, List, Optional, Union
 
 # 嵌套式的数据设计，规范数据 config.json
@@ -87,7 +87,7 @@ class Schedall(BaseModel):
     restart_chat_id: int = 0
     restart_msg_id: int = 0
     backup_db: bool = True
-    # xserver（测试服）到期检测
+    # xserver（体验服）到期检测
     xserver_check_ex: bool = True
 
     def __init__(self, **data):
@@ -141,7 +141,7 @@ class RedEnvelope(BaseModel):
     allow_private: bool = True # 是否允许专属红包
 
 class XserverChannels(BaseModel):
-    """xserver（扩展服务器/测试服）开号资格通道开关"""
+    """xserver（扩展服务器/体验服）开号资格通道开关"""
     # 通道A：主服持有有效账号即可免费一键开号
     main_user: bool = True
     # 通道B：仅白名单用户（lv='a'）免费开号
@@ -154,11 +154,11 @@ class XserverChannels(BaseModel):
 
 class Xserver(BaseModel):
     """
-    xserver - 旁路扩展emby服务器（如测试服），与主服数据结构完全隔离。
+    xserver - 旁路扩展emby服务器（如体验服），与主服数据结构完全隔离。
     账号记录在 xserver_account 表，名额在 xserver_quota 表。
     """
     id: str
-    name: str = "测试服"
+    name: str = "体验服"
     enable: bool = True
     url: str
     api: str
@@ -168,11 +168,11 @@ class Xserver(BaseModel):
     # 初始名额种子（首次启动写入 xserver_quota，之后以表内值为准）
     # all_user = 主服已有账号用户的名额池
     all_user: int = 50
-    # all_user_open = 主服没有账号的用户（纯测试用户）的名额池
+    # all_user_open = 主服没有账号的用户（纯体验用户）的名额池
     all_user_open: int = 20
     # 创建账号时同时限制的同时连接数
     limit: int = 2
-    # 测试服上需要隐藏的媒体库名称（独立于主服 emby_block）
+    # 体验服上需要隐藏的媒体库名称（独立于主服 emby_block）
     block_libs: Optional[List[str]] = []
     # 开号用户名前缀，用于与主服账号区分
     name_prefix: str = "t_"
@@ -180,6 +180,12 @@ class Xserver(BaseModel):
     # 关闭时管理员直发/资格码兑换的 grant 通道不受限，可定向放行回锅用户
     allow_reopen: bool = False
     channels: XserverChannels = Field(default_factory=XserverChannels)
+
+    @field_validator('name')
+    @classmethod
+    def normalize_name(cls, name: str) -> str:
+        """兼容旧配置的展示名称，保留服务器 ID 与已有账号、注册码关联。"""
+        return name.replace('测试服', '体验服')
 
 
 class Config(BaseModel):
@@ -254,7 +260,7 @@ class Config(BaseModel):
     auto_update: AutoUpdate = Field(default_factory=AutoUpdate)
     red_envelope: RedEnvelope = Field(default_factory=RedEnvelope)
     api: API = Field(default_factory=API)
-    # 扩展emby服务器列表（测试服等），默认空，老配置零影响
+    # 扩展emby服务器列表（体验服等），默认空，老配置零影响
     xservers: Optional[List[Xserver]] = []
 
     def __init__(self, **data):

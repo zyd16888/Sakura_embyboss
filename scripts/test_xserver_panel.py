@@ -100,7 +100,10 @@ def setup_server(total=10, open_total=None, **over):
     # 默认 allow_reopen=True 保持历史回滚类用例语义；复开限制单独测
     over.setdefault('allow_reopen', True)
     fresh_db(NS)
-    xc = Xserver(id="test", name="测试服", url="http://t:8096", api="K",
+    async def get_users(tg):
+        return FakeUser(tg, f"User{tg}")
+    NS["bot_stub"].bot.get_users = get_users
+    xc = Xserver(id="test", name="体验服", url="http://t:8096", api="K",
                  line="http://t.line", all_user=total,
                  all_user_open=total if open_total is None else open_total, **over)
     NS["cfg"].xservers = [xc]
@@ -249,7 +252,7 @@ class OpenFlowTests(unittest.TestCase):
         self.assertIn("开通方式 | 免费", out)
         notices = group_notices()
         self.assertEqual(notices, [
-            "🎉 恭喜 [Alice](tg://user?id=111) 成功开通「测试服」账号！"
+            "🎉 恭喜 [Alice](tg://user?id=111) 成功开通「体验服」账号！"
         ])
         self.assertNotIn("\n", notices[0])
         self.assertNotIn("t_alice", notices[0])
@@ -536,7 +539,7 @@ class OpenFlowTests(unittest.TestCase):
         self.assertIsNone(sx.xacc_get("test", 111))
         self.assertEqual(sx.xquota_get("test").used, 0)
         self.assertEqual(group_notices(), [
-            "🗑️ [这位小伙伴](tg://user?id=111) 的「测试服」账号已删除"
+            "🗑️ [u](tg://user?id=111) 的「体验服」账号已删除"
             "（用户主动注销），名额已释放。"
         ])
         self.assertNotIn("t_alice", group_notices()[0])
@@ -545,6 +548,24 @@ class OpenFlowTests(unittest.TestCase):
 # ---------------- 注册码 ----------------
 
 class CodeTests(unittest.TestCase):
+    def test_generated_codes_are_individually_copyable_across_chunks(self):
+        setup_server()
+        original_ranks = xa.ranks
+        xa.ranks = types.SimpleNamespace(logo="T" * 30)
+        try:
+            self.assertTrue(run(xa._emit_codes(FakeMsg(1), "test", 50, 7, "reg")))
+        finally:
+            xa.ranks = original_ranks
+        replies = [item[1] for item in captured if item[0] == "reply"]
+        self.assertGreater(len(replies), 1)
+        self.assertIn("体验服 开号资格码 · 50 张 × 7 天", replies[0])
+        rows, total = sx.xcode_list("test", "reg", False, 0, 50)
+        self.assertEqual(total, 50)
+        code_lines = [line for reply in replies for line in reply.splitlines()
+                      if "-XREG_" in line]
+        self.assertEqual(set(code_lines), {f"`{row.code}`" for row in rows})
+        self.assertTrue(all(len(reply) <= 1800 for reply in replies))
+
     def test_is_xserver_code(self):
         self.assertTrue(xcode.is_xserver_code("T-test-XREG_abc"))
         self.assertTrue(xcode.is_xserver_code("T-test-XRNV_abc"))
@@ -623,7 +644,7 @@ class CodeTests(unittest.TestCase):
         self.assertIsNone(sx.xacc_get("test", 668))
         self.assertEqual(sx.xcode_get(codes[0]).used, 668)
         self.assertIsNone(sx.xcode_get(codes[1]).used)
-        self.assertTrue(any("每个用户在每个测试服仅限使用一张" in str(item)
+        self.assertTrue(any("每个用户在每个体验服仅限使用一张" in str(item)
                             for item in captured))
 
     def test_reg_code_limit_is_scoped_per_server(self):
@@ -727,7 +748,7 @@ class AdminPanelEntryTests(unittest.TestCase):
         run(xa.xs_admin_cmd(None, msg))
 
         self.assertEqual(captured[0][0], "send")
-        self.assertIn("测试服 · 管理", captured[0][1])
+        self.assertIn("体验服 · 管理", captured[0][1])
         self.assertEqual(captured[-1], ("delete",))
         self.assertFalse(any(item[0] == "edit" for item in captured))
 
@@ -742,7 +763,7 @@ class AdminPanelEntryTests(unittest.TestCase):
             None, FakeCall(1, f"xsa:cl:{sid_hex}:reg:unused:0")))
 
         unused_view = next(item for item in reversed(captured) if item[0] == "edit")
-        self.assertIn("测试服 · 开号码", unused_view[1])
+        self.assertIn("体验服 · 开号码", unused_view[1])
         self.assertIn(codes[0], unused_view[1])
         self.assertNotIn(codes[1], unused_view[1])
         buttons = [button for row in unused_view[2] for button in row]
@@ -797,7 +818,7 @@ class AdminPanelEntryTests(unittest.TestCase):
 
         self.assertEqual(svc.deleted, ["ID-t_remove_success"])
         self.assertEqual(group_notices(), [
-            "🗑️ [这位小伙伴](tg://user?id=2004) 的「测试服」账号已删除"
+            "🗑️ [User2004](tg://user?id=2004) 的「体验服」账号已删除"
             "（管理员删除），名额已释放。"
         ])
         self.assertNotIn("t_remove_success", group_notices()[0])
@@ -814,7 +835,7 @@ class AdminPanelEntryTests(unittest.TestCase):
 
         self.assertIsNotNone(sx.xacc_get("test", 2003))
         self.assertEqual(svc.deleted, [])
-        self.assertTrue(any("确认删除测试服账号" in str(item) for item in captured))
+        self.assertTrue(any("确认删除体验服账号" in str(item) for item in captured))
 
         captured.clear()
         run(xa.xs_admin_delete_cb(None, FakeCall(1, f"xsa:oxc:{sid_hex}:2003")))
@@ -823,13 +844,26 @@ class AdminPanelEntryTests(unittest.TestCase):
         self.assertEqual(svc.deleted, ["ID-t_delete"])
         self.assertEqual(sx.xquota_get("test").used, 0)
         self.assertEqual(group_notices(), [
-            "🗑️ [这位小伙伴](tg://user?id=2003) 的「测试服」账号已删除"
+            "🗑️ [User2003](tg://user?id=2003) 的「体验服」账号已删除"
             "（管理员删除），名额已释放。"
         ])
         self.assertNotIn("t_delete", group_notices()[0])
 
 
 # ---------------- 到期任务 ----------------
+
+class DeletionNoticeTests(unittest.TestCase):
+    def test_name_lookup_failure_still_sends_notice(self):
+        xc = setup_server()
+        async def unavailable(tg):
+            raise RuntimeError("peer unavailable")
+        NS["bot_stub"].bot.get_users = unavailable
+        run(xs.notify_xserver_deleted(xc, 123, "到期自动删除"))
+        self.assertEqual(group_notices(), [
+            "🗑️ [123](tg://user?id=123) 的「体验服」账号已删除"
+            "（到期自动删除），名额已释放。"
+        ])
+
 
 class ExpiryTests(unittest.TestCase):
     def test_expired_deleted_quota_released(self):
@@ -846,7 +880,7 @@ class ExpiryTests(unittest.TestCase):
         self.assertIsNone(sx.xacc_get("test", 777))
         self.assertEqual(sx.xquota_get("test").used, 0)
         self.assertEqual(group_notices(), [
-            "🗑️ [这位小伙伴](tg://user?id=777) 的「测试服」账号已删除"
+            "🗑️ [User777](tg://user?id=777) 的「体验服」账号已删除"
             "（到期自动删除），名额已释放。"
         ])
         self.assertNotIn("t_ivy", group_notices()[0])
@@ -971,7 +1005,7 @@ class CascadeTests(unittest.TestCase):
         q = sx.xquota_get("test")
         self.assertEqual((q.used, q.used_open), (0, 0))  # main 池名额退回
         self.assertEqual(group_notices(), [
-            f"🗑️ [这位小伙伴](tg://user?id={tg}) 的「测试服」账号已删除"
+            f"🗑️ [User{tg}](tg://user?id={tg}) 的「体验服」账号已删除"
             "（主服账号清理后同步删除），名额已释放。"
         ])
         self.assertNotIn("t_leo", group_notices()[0])
@@ -981,7 +1015,7 @@ class CascadeTests(unittest.TestCase):
         se.sql_update_emby(se.Emby.tg == tg, lv='c')            # 模拟 check_ex 封印
         run(xserver_ex.check_xserver_expired())
         a = sx.xacc_get("test", tg)
-        self.assertEqual(a.lv, 'c')                             # 测试号封印但保留
+        self.assertEqual(a.lv, 'c')                             # 体验号封印但保留
         self.assertEqual(svc.deleted, [])                       # 未删号
         self.assertEqual(sx.xquota_get("test").used, 1)         # 名额不退
         self.assertIn((f"ID-t_monk", True), svc.policy)         # disable=True

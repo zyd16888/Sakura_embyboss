@@ -52,7 +52,7 @@ cfg = {
     "ranks": {"logo": "SAKURA"},
     "schedall": {},
     "xservers": [{
-        "id": "test", "name": "测试服", "enable": True,
+        "id": "test", "name": "体验服", "enable": True,
         "url": "http://test:8096", "api": "k2", "line": "http://test.line",
         "expire_days": 15, "all_user": 50, "block_libs": ["nsfw"],
         "name_prefix": "t_",
@@ -90,7 +90,7 @@ try:
     from bot.func_helper.fix_bottons import judge_start_ikb, members_ikb  # noqa: E402
     kb = members_ikb(account=True)
     dumped = json.dumps(kb, ensure_ascii=False, default=str)
-    assert "xs:m" in dumped, "用户面板未注入测试服按钮"
+    assert "xs:m" in dumped, "用户面板未注入体验服按钮"
     kb2 = judge_start_ikb(False, False)
     assert "xs:m" in json.dumps(kb2, ensure_ascii=False, default=str)
 

@@ -1,12 +1,12 @@
 """
-xserver（扩展服务器/测试服）数据层 —— 与原有 emby/emby2/Rcode 表完全隔离。
+xserver（扩展服务器/体验服）数据层 —— 与原有 emby/emby2/Rcode 表完全隔离。
 
 - xserver_account:  (server_id, tg) 复合主键，一个用户在一台扩展服务器一条记录；
                     embyid 为空但 us>0 表示「持有开号资格待使用」。
                     pool 记录占用哪个名额池：main=主服已有账号 / open=主服无账号。
 - xserver_quota:    server_id 主键，双名额池 total/used（主服用户池）与
                     total_open/used_open（开放池），占用/回收均为单条原子SQL，杜绝超卖。
-- xserver_code:     测试服注册码（独立于 Rcode），前缀 XREG/XRNV 区分注册/续期。
+- xserver_code:     体验服注册码（独立于 Rcode），前缀 XREG/XRNV 区分注册/续期。
 """
 from datetime import datetime
 
@@ -16,7 +16,7 @@ from bot.sql_helper import Base, Session
 from bot import LOGGER
 
 POOL_MAIN = 'main'   # 主服已有账号用户
-POOL_OPEN = 'open'   # 主服没有账号的纯测试用户
+POOL_OPEN = 'open'   # 主服没有账号的纯体验用户
 
 
 class XserverAccount(Base):

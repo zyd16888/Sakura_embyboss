@@ -1,5 +1,5 @@
 """
-xserver（测试服等旁路扩展服务器）用户面板。
+xserver（体验服等旁路扩展服务器）用户面板。
 
 与主服 member_panel / emby 表完全隔离：
 - 账号只读写 xserver_account / xserver_quota / xserver_code；
@@ -7,7 +7,7 @@ xserver（测试服等旁路扩展服务器）用户面板。
 
 双名额池：
 - POOL_MAIN（config.all_user）：开号时主服已有账号的用户；
-- POOL_OPEN（config.all_user_open）：开号时主服没有账号的纯测试用户。
+- POOL_OPEN（config.all_user_open）：开号时主服没有账号的纯体验用户。
 账号行记录 pool，注销/到期/管理删除按原池回收。
 
 回调格式 xs:<hex(server_id)>:<action>：
@@ -149,7 +149,7 @@ def _result_buttons(sid: str, retry: str = None):
     rows = []
     if retry:
         rows.append([('♻️ 重新尝试', f'xs:{retry}:{_enc(sid)}')])
-    rows.append([('🔙 返回测试服', f'xs:h:{_enc(sid)}')])
+    rows.append([('🔙 返回体验服', f'xs:h:{_enc(sid)}')])
     return ikb(rows)
 
 
@@ -172,16 +172,16 @@ def _quota_lines(q, pool: str) -> str:
 
 @bot.on_callback_query(filters.regex('^xs:m') & user_in_group_on_filter)
 async def xs_menu(_, call):
-    """测试服入口：单服直达，多服列表"""
+    """体验服入口：单服直达，多服列表"""
     servers = enabled_servers()
     if not servers:
-        return await callAnswer(call, '⚠️ 管理员暂未开放测试服', True)
+        return await callAnswer(call, '⚠️ 管理员暂未开放体验服', True)
     if len(servers) == 1:
         return await xs_home_show(_, call, servers[0].id)
     rows = [[(f'🧪 {xc.name}', f'xs:h:{_enc(xc.id)}')] for xc in servers]
     rows.append([('🔙 返回', 'members')])
     await callAnswer(call, '🧪 请选择服务器')
-    await editMessage(call, '**🧪 测试服 · 请选择服务器**', buttons=ikb(rows))
+    await editMessage(call, '**🧪 体验服 · 请选择服务器**', buttons=ikb(rows))
 
 
 @bot.on_callback_query(filters.regex('^xs:h:') & user_in_group_on_filter)
@@ -229,7 +229,7 @@ async def xs_home_show(_, call, sid: str, answer: bool = True):
     has_account = bool(a and a.embyid)
     slot_left = bool(q and xquota_pool_used(q, pool) < xquota_pool_total(q, pool))
     if has_account:
-        buttons.append([('🗑️ 注销测试号', f'xs:d:{_enc(sid)}')])
+        buttons.append([('🗑️ 注销体验号', f'xs:d:{_enc(sid)}')])
         if a.lv != 'b':
             buttons.append([('⚠️ 账号已被管理员封印', f'xs:h:{_enc(sid)}')])
     elif kind != 'none':
@@ -361,7 +361,7 @@ async def _occupy_and_open(call, sid: str, want_name: str, want_pwd, want_pwd2: 
     # 复开限制：默认一人一次（防脚本蹲坑回收后再抢）；grant 通道豁免，
     # 管理员直发资格即定向放行回锅用户
     if kind != 'grant' and not xc.allow_reopen and xhist_has_opened(sid, tg):
-        return False, ('🚫 测试服账号**每人只限体验一次**，你的历史体验已结束，\n'
+        return False, ('🚫 体验服账号**每人只限体验一次**，你的历史体验已结束，\n'
                        '名额请留给其他小伙伴。如需再次体验请联系管理员。')
 
     pool = _pool_of(main)
@@ -587,7 +587,7 @@ async def xs_create(_, call):
         if (current_kind, current_cost, current_days) != (kind, cost, days):
             ok = False
             out = ('⚠️ 开号条件在输入期间发生变化，本次未扣除积分或资格。\n\n'
-                   '请返回测试服面板重新确认。')
+                   '请返回体验服面板重新确认。')
         else:
             ok, out = await _occupy_and_open(call, sid, want_name, None, pwd2, copied=False)
     await editMessage(status, out, buttons=_result_buttons(sid, None if ok else 'c'))
@@ -632,7 +632,7 @@ async def xs_del_confirm(_, call):
         name = a.name
         xc = _xc_of(sid)
         if xc is not None:
-            await notify_xserver_deleted(xc, tg, '用户主动注销')
+            await notify_xserver_deleted(xc, tg, '用户主动注销', call.from_user.first_name)
     await editMessage(call, f"**✅ 已注销 `{name}`，名额已回收。**",
                       buttons=ikb([[('🔙 返回', f'xs:h:{_enc(sid)}')]]))
     LOGGER.info(f'【xserver】注销 {sid} {name} -> tg={tg}')

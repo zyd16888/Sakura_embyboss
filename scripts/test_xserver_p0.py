@@ -41,11 +41,17 @@ class XserverSchemaTests(unittest.TestCase):
             "channels": {"points_cost": 80},
         }])
         x = c2.xservers[0]
+        self.assertEqual(x.name, "体验服")
         self.assertEqual(x.expire_days, 15)
         self.assertEqual(x.name_prefix, "t_")
         self.assertTrue(x.channels.main_user)
         self.assertFalse(x.channels.whitelist)
         self.assertEqual(x.channels.points_cost, 80)
+
+    def test_legacy_display_name_preserves_server_id(self):
+        xc = Xserver(id="test", name="测试服一号", url="http://t:8096", api="k")
+        self.assertEqual(xc.name, "体验服一号")
+        self.assertEqual(xc.id, "test")
 
 
 # ---------------- 数据层 ----------------
@@ -144,7 +150,7 @@ class FakeResult:
 class XserverServiceTests(unittest.TestCase):
     def setUp(self):
         fresh_db(NS)
-        self.xc = Xserver(id="test", name="测试服", url="http://1.2.3.4:8096", api="K",
+        self.xc = Xserver(id="test", name="体验服", url="http://1.2.3.4:8096", api="K",
                           line="http://test.example.com:8096", all_user=3, expire_days=15,
                           block_libs=["nsfw"])
         NS["cfg"].xservers = [self.xc]

@@ -131,7 +131,7 @@
   "xservers": [
     {
       "id": "test",
-      "name": "测试服",
+      "name": "体验服",
       "enable": true,
       "url": "http://10.0.0.2:8096",
       "api": "xxxxx",

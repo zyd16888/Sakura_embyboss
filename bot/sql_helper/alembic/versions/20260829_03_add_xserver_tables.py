@@ -1,4 +1,4 @@
-"""add xserver tables (测试服旁路扩展，与原有表隔离)
+"""add xserver tables (体验服旁路扩展，与原有表隔离)
 
 Revision ID: 20260829_03
 Revises: 20260315_02

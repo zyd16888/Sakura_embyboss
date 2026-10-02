@@ -3,10 +3,10 @@ xserver 到期检测 + 主服软级联。每小时跑一次（schedall.xserver_c
 
 到期语义（用户确认）：到期 = 删除远端账号 + 清除本地记录 + 回收名额。
 
-软级联（方案一，不碰任何主服原代码）：对 main 池（开号时主服有账号）的测试号，
+软级联（方案一，不碰任何主服原代码）：对 main 池（开号时主服有账号）的体验号，
 对齐主服现状——
-- 主服账号已被删/清空（delme / !rmemby / 退群清理 / check_ex 真删）→ 级联删除测试号并退名额；
-- 主服被封印（lv='c'）→ 级联封印测试号（保留名额与到期，主服恢复后由管理员 !xsext 解封）；
+- 主服账号已被删/清空（delme / !rmemby / 退群清理 / check_ex 真删）→ 级联删除体验号并退名额；
+- 主服被封印（lv='c'）→ 级联封印体验号（保留名额与到期，主服恢复后由管理员 !xsext 解封）；
 - open 池（主服无号的体验用户）与未开号的资格行完全跳过。
 """
 from datetime import datetime
@@ -65,7 +65,7 @@ async def _expire_pass(servers):
         for a in rows:
             # DAO 保证返回行必有 embyid（到期行 / 已建号无期限的半成品）
             await _purge(svc, xc, a, '到期自动删除',
-                         f'🧪 你的 {xc.name} 测试账号 `{a.name}` 已到期删除，'
+                         f'🧪 你的 {xc.name} 体验账号 `{a.name}` 已到期删除，'
                          f'名额已释放。欢迎下次再来体验～')
 
 
@@ -83,7 +83,7 @@ async def _cascade_pass(servers):
             main = sql_get_emby(a.tg)
             if main is None or not main.embyid:
                 await _purge(svc, xc, a, '主服账号清理后同步删除',
-                             f'🧪 你的主服账号已被删除/清理，{xc.name} 测试账号 '
+                             f'🧪 你的主服账号已被删除/清理，{xc.name} 体验账号 '
                              f'`{a.name}` 已同步删除，名额已释放。')
             elif main.lv == 'c' and a.lv == 'b':
                 if await svc.emby_change_policy(a.embyid, disable=True):
@@ -92,13 +92,13 @@ async def _cascade_pass(servers):
                                 f'(tg={a.tg})：主服已被封')
                     try:
                         await bot.send_message(
-                            a.tg, f'🧪 你的主服账号已被封禁，{xc.name} 测试账号 '
+                            a.tg, f'🧪 你的主服账号已被封禁，{xc.name} 体验账号 '
                                   f'`{a.name}` 已同步封印。主服恢复后可联系管理员解封。')
                     except Exception as e:
                         LOGGER.warning(f'【xserver主服级联】通知失败 {a.tg}: {e}')
 
 
-# 启动时注册：每小时检测一次测试服到期+级联（schedall.xserver_check_ex 控制开关）
+# 启动时注册：每小时检测一次体验服到期+级联（schedall.xserver_check_ex 控制开关）
 def _register_job():
     try:
         from bot import schedall

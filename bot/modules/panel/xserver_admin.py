@@ -1,5 +1,5 @@
 """
-xserver（测试服）管理面板 —— 全部走新表新文件，不触碰主服管理逻辑。
+xserver（体验服）管理面板 —— 全部走新表新文件，不触碰主服管理逻辑。
 
 双名额池管理：main（主服已有账号用户）与 open（无主服账号用户）各自独立
 ➕/➖/设总数；账号行记录占用的池，删除/注销按原池回收。
@@ -153,12 +153,12 @@ def _server_rows(servers):
 async def xs_admin_cmd(_, msg):
     servers = _all_configured_servers()
     if not servers:
-        result = await sendMessage(msg, '⚠️ 尚未配置测试服（config.xservers）', timer=60)
+        result = await sendMessage(msg, '⚠️ 尚未配置体验服（config.xservers）', timer=60)
     elif len(servers) == 1:
         result = await _admin_home_render(_, msg, servers[0].id)
     else:
         rows = _server_rows(servers)
-        result = await sendMessage(msg, '**🧪 测试服管理 · 选择服务器**（🔴=已禁用）',
+        result = await sendMessage(msg, '**🧪 体验服管理 · 选择服务器**（🔴=已禁用）',
                                    buttons=ikb(rows))
     await deleteMessage(msg)
     return result
@@ -168,10 +168,10 @@ async def xs_admin_cmd(_, msg):
 async def xs_admin_menu_cb(_, call):
     servers = _all_configured_servers()
     if not servers:
-        return await callAnswer(call, '⚠️ 无配置的测试服', True)
+        return await callAnswer(call, '⚠️ 无配置的体验服', True)
     if len(servers) == 1:
         return await _admin_home_render(_, call, servers[0].id)
-    await editMessage(call, '**🧪 测试服管理 · 选择服务器**（🔴=已禁用）',
+    await editMessage(call, '**🧪 体验服管理 · 选择服务器**（🔴=已禁用）',
                       buttons=ikb(_server_rows(servers)))
 
 
@@ -421,9 +421,10 @@ async def _emit_codes(msg, sid: str, count: int, days: int, kind: str):
     codes = [f'{ranks.logo}-{sid}{mark}{await pwd_create(10)}' for _ in range(count)]
     if not xcode_add(codes, sid, msg.from_user.id, days, kind):
         return await msg.reply('❌ 注册码写入数据库失败，请重试')
-    head = (f'🧪 `{sid}` {"开号资格" if kind == "reg" else "续期"}码 · '
+    xc = _xc_of(sid)
+    head = (f'🧪 {xc.name if xc else sid} {"开号资格" if kind == "reg" else "续期"}码 · '
             f'{count} 张 × {days} 天\n\n')
-    for chunk in split_long_message(head + '\n'.join(codes), max_length=1800):
+    for chunk in split_long_message(head + '\n'.join(f'`{code}`' for code in codes), max_length=1800):
         await msg.reply(chunk)
     LOGGER.info(f'【xserver管理】{msg.from_user.id} 在 {sid} 开出 {kind} 码 {count}张/{days}天')
     return True
@@ -435,7 +436,7 @@ async def xs_create_code_ask(_, call):
     if _xc_of(sid) is None:
         return await callAnswer(call, '⚠️ 服务器不存在', True)
     msg = await ask_return(call,
-                           text='🎫 **【开测试服资格码】**\n\n'
+                           text='🎫 **【开体验服资格码】**\n\n'
                                 '请在2min内发送 `[数量][空格][天数]`，例：`3 30`\n'
                                 '· 用户兑换后获得 N 天开号资格（开号时有效期=资格天数）\n'
                                 '· 续期码请用命令 `/xscrn <数量> <天数> [server_id]`\n'
@@ -464,7 +465,7 @@ async def xs_cmd_renew_code(_, msg):
     except (ValueError, AssertionError):
         return await _command_reply(msg, '⚠️ 数量1-50、天数1-3650')
     if _xc_of(sid) is None:
-        return await _command_reply(msg, '⚠️ 无启用的测试服')
+        return await _command_reply(msg, '⚠️ 无启用的体验服')
     result = await _emit_codes(msg, sid, count, days, 'renew')
     await deleteMessage(msg)
     return result
@@ -539,7 +540,7 @@ async def xs_admin_info(_, msg):
     if len(args) != 1:
         return await _command_reply(msg, '用法：`/xsin <tg|用户名> [server_id]`')
     if _xc_of(sid) is None:
-        return await _command_reply(msg, '⚠️ 无启用的测试服')
+        return await _command_reply(msg, '⚠️ 无启用的体验服')
     a = xacc_get_any(sid, _to_key(args[0]))
     if a is None:
         return await _command_reply(msg, f'❌ `{sid}` 未找到账号 `{args[0]}`')
@@ -571,7 +572,7 @@ async def xs_admin_grant(_, msg):
     except (ValueError, AssertionError):
         return await _command_reply(msg, '⚠️ tg/天数须为正整数')
     if _xc_of(sid) is None:
-        return await _command_reply(msg, f'⚠️ 测试服 `{sid}` 未启用')
+        return await _command_reply(msg, f'⚠️ 体验服 `{sid}` 未启用')
     if sql_get_emby(tg) is None and xacc_get(sid, tg) is None:
         return await _command_reply(msg, '⚠️ 该 TG 未 /start 过 bot，无法发放资格')
     if not xacc_grant(sid, tg, days):
@@ -579,8 +580,8 @@ async def xs_admin_grant(_, msg):
     LOGGER.info(f'【xserver管理】{msg.from_user.id} 给 {tg} 在 {sid} 发放资格 {days} 天')
     await _command_reply(msg, f'✅ 已给 `{tg}` 在 `{sid}` 发放开号资格 **{days}** 天')
     try:
-        await bot.send_message(tg, f'🎉 管理员发放了测试服 `{sid}` 开号资格 {days} 天，'
-                                   f'前往【🧪 测试服开号】使用')
+        await bot.send_message(tg, f'🎉 管理员发放了体验服 `{sid}` 开号资格 {days} 天，'
+                                   f'前往【🧪 体验服开号】使用')
     except Exception as e:
         LOGGER.warning(f'【xserver管理】资格通知失败 {tg}: {e}')
 
@@ -614,7 +615,7 @@ async def xs_admin_extend(_, msg):
     await _command_reply(msg, f'✅ `{a.name}` 已{"续期" if days > 0 else "调整"} {days} 天\n'
                               f'新到期：{new_ex}')
     try:
-        await bot.send_message(a.tg, f'🧪 你的测试服 `{a.name}` 到期时间已调整为 {new_ex}')
+        await bot.send_message(a.tg, f'🧪 你的体验服 `{a.name}` 到期时间已调整为 {new_ex}')
     except Exception as e:
         LOGGER.warning(f'【xserver管理】续期通知失败 {a.tg}: {e}')
 
@@ -650,7 +651,7 @@ async def xs_admin_remove(_, msg):
     await _command_reply(msg, f'✅ 已删除 `{name}`（{xc.name if xc else sid}），'
                               f'名额已退回{POOL_LABEL[pool]}')
     try:
-        await bot.send_message(a.tg, f'🧪 管理员删除了你的测试服账号 `{name}`，名额已释放')
+        await bot.send_message(a.tg, f'🧪 管理员删除了你的体验服账号 `{name}`，名额已释放')
     except Exception as e:
         LOGGER.warning(f'【xserver管理】删除通知失败 {a.tg}: {e}')
 
@@ -767,7 +768,7 @@ async def xs_admin_delete_ask(_, call):
     await callAnswer(call, '⚠️ 请确认删除')
     await editMessage(
         call,
-        f'**确认删除测试服账号？**\n\n用户名：`{a.name}`\nTG：`{a.tg}`\n'
+        f'**确认删除体验服账号？**\n\n用户名：`{a.name}`\nTG：`{a.tg}`\n'
         '远端账号、本地记录及所占名额都会被清理。',
         buttons=ikb([
             [('✅ 确认删除', f'xsa:oxc:{sid_hex}:{tg}')],

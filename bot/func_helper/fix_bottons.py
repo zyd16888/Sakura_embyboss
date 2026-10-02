@@ -25,7 +25,7 @@ def judge_start_ikb(is_admin: bool, account: bool) -> InlineKeyboardMarkup:
         d.append(['🔍 绑定TG', 'bindtg'])
         from bot.modules.panel.xserver_panel import xserver_available
         if xserver_available():
-            d.append(['🧪 测试服开号', 'xs:m'])
+            d.append(['🧪 体验服开号', 'xs:m'])
         # 如果邀请等级为d （未注册用户也能使用），则显示兑换商店
         if _open.invite_lv == 'd':
             d.append(['🏪 兑换商店', 'storeall'])
@@ -66,7 +66,7 @@ def members_ikb(is_admin: bool = False, account: bool = False) -> InlineKeyboard
                     ]
         from bot.modules.panel.xserver_panel import xserver_available
         if xserver_available():
-            normal.append([('🧪 测试服开号', 'xs:m')])
+            normal.append([('🧪 体验服开号', 'xs:m')])
         if moviepilot.status:
             normal.append([('🍿 点播中心', 'download_center')])
         normal.append([('♻️ 主界面', 'back_start')])

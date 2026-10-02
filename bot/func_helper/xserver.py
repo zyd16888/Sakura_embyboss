@@ -1,7 +1,7 @@
 #! /usr/bin/python3
 # -*- coding: utf-8 -*-
 """
-xserver（测试服等旁路扩展服务器）服务层。
+xserver（体验服等旁路扩展服务器）服务层。
 
 设计红线：不修改 embyservice 主流程与任何原有表结构。
 - Embyservice 的 Singleton 元类按 (cls, url, api_key) 缓存实例，
@@ -11,7 +11,7 @@ xserver（测试服等旁路扩展服务器）服务层。
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple, Union
 
-from bot import config, LOGGER
+from bot import bot, config, LOGGER
 from bot.func_helper.emby import Embyservice, create_policy, pwd_policy
 from bot.func_helper.msg_utils import sendMessage
 from bot.func_helper.utils import pwd_create
@@ -141,14 +141,21 @@ def xserver_lines() -> str:
 
 
 async def notify_xserver_opened(xc: Xserver, tg: int, first_name: str):
-    """向主授权群发送脱敏的测试服开号通知。"""
+    """向主授权群发送脱敏的体验服开号通知。"""
     text = f'🎉 恭喜 [{first_name}](tg://user?id={tg}) 成功开通「{xc.name}」账号！'
     await _send_group_notice(text, tg)
 
 
-async def notify_xserver_deleted(xc: Xserver, tg: int, reason: str):
-    """向主授权群发送脱敏的测试服删号通知。"""
-    text = (f'🗑️ [这位小伙伴](tg://user?id={tg}) 的「{xc.name}」账号已删除'
+async def notify_xserver_deleted(xc: Xserver, tg: int, reason: str,
+                                 first_name: Optional[str] = None):
+    """向主授权群发送脱敏的体验服删号通知。"""
+    if not first_name:
+        try:
+            user = await bot.get_users(tg)
+            first_name = user.first_name
+        except Exception as e:
+            LOGGER.warning(f'【xserver群通知】获取用户名字失败 tg={tg}: {e}')
+    text = (f'🗑️ [{first_name or tg}](tg://user?id={tg}) 的「{xc.name}」账号已删除'
             f'（{reason}），名额已释放。')
     await _send_group_notice(text, tg)
 
