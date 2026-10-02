@@ -58,8 +58,13 @@ async def remove_pitao(_, msg):
     LOGGER.info(f'【AntiChannel】- {gm} 封禁皮套 ——> {a}')
 
 
-custom_message_filter = filters.create(
-    lambda _, __, message: False if message.forward_from_chat or message.from_user or not config.fuxx_pitao else True)
+def _is_channel_sender_message(_, __, message):
+    origin = message.forward_origin
+    forwarded_chat = getattr(origin, 'chat', getattr(origin, 'sender_chat', None))
+    return not (forwarded_chat or message.from_user or not config.fuxx_pitao)
+
+
+custom_message_filter = filters.create(_is_channel_sender_message)
 custom_chat_filter = filters.create(
     lambda _, __,
            message: True if message.sender_chat.id != message.chat.id and message.sender_chat.id not in w_anti_channel_ids else False)
