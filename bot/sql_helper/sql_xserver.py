@@ -427,21 +427,39 @@ def xcode_unused_of(server_id: str, kind: str = 'reg'):
             return 0
 
 
-def xcode_list(server_id: str, kind: str, is_used: bool,
-               page: int = 0, page_size: int = 10):
-    """按服务器、码类型和使用状态分页查询，返回 (当前页, 总数)。"""
+def _xcode_query(session, server_id: str, kind: str, is_used):
+    query = session.query(XserverCode).filter(
+        XserverCode.server_id == server_id,
+        XserverCode.kind == kind,
+    )
+    if is_used is not None:
+        query = query.filter(XserverCode.used.isnot(None) if is_used
+                             else XserverCode.used.is_(None))
+    return query
+
+
+def xcode_days_of(server_id: str, kind: str, is_used):
+    """当前服务器、类型和使用状态下可筛选的有效天数。"""
     with Session() as session:
         try:
-            query = session.query(XserverCode).filter(
-                XserverCode.server_id == server_id,
-                XserverCode.kind == kind,
-            )
-            if is_used:
-                query = query.filter(XserverCode.used.isnot(None))
-                query = query.order_by(XserverCode.usedtime.desc(), XserverCode.code.asc())
-            else:
-                query = query.filter(XserverCode.used.is_(None))
-                query = query.order_by(XserverCode.code.asc())
+            rows = _xcode_query(session, server_id, kind, is_used).with_entities(
+                XserverCode.us).distinct().order_by(XserverCode.us.asc()).all()
+            return [int(days or 0) for (days,) in rows]
+        except Exception as e:
+            LOGGER.error(f"【xserver】code_days 查询失败 {server_id}/{kind}: {e}")
+            return []
+
+
+def xcode_list(server_id: str, kind: str, is_used,
+               page: int = 0, page_size: int = 10, days=None):
+    """按服务器、类型、状态与天数分页查询；None 表示全部状态/天数。"""
+    with Session() as session:
+        try:
+            query = _xcode_query(session, server_id, kind, is_used)
+            if days is not None:
+                query = query.filter(XserverCode.us == days)
+            query = query.order_by(XserverCode.us.asc(), XserverCode.usedtime.desc(),
+                                   XserverCode.code.asc())
             total = query.count()
             rows = query.offset(max(0, page) * page_size).limit(page_size).all()
             return rows, total

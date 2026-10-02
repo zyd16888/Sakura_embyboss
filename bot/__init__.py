@@ -119,6 +119,7 @@ admin_p = user_p + [
     BotCommand("coinsall", "一键派送币币给指定等级的用户 [管理]"),
     BotCommand("coinsclear", "一键清除所有用户的币币 [管理]"),
     BotCommand("callall", "群发消息给每个人 [管理]"),
+    BotCommand("groupsay", "以机器人身份在群内发消息 [管理/私聊]"),
     BotCommand("only_rm_emby", "删除指定的Emby账号 [管理]"),
     BotCommand("only_rm_record", "删除指定的tgid数据库记录 [管理]"),
     BotCommand("restart", "重启bot [管理]"),

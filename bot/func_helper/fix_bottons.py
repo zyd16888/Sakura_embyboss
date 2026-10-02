@@ -146,6 +146,7 @@ async def cr_page_server():
 gm_ikb_content = ikb([[('⭕ 注册状态', 'open-menu'), ('🎟️ 创建兑换码', 'cr_link')],
                       [('💊 查询注册', 'ch_link'), ('🏬 兑换设置', 'set_renew')],
                       [('👥 用户列表', 'normaluser'), ('👑 白名单列表', 'whitelist'), ('💠 设备列表', 'user_devices')],
+                      [('📣 群内发言', 'gs:menu')],
                       [('🌏 定时', 'schedall'), ('🕹️ 主界面', 'back_start'), ('其他 🪟', 'back_config')]])
 
 

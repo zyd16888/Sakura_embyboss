@@ -32,7 +32,7 @@ from bot.sql_helper.sql_emby import sql_get_emby
 from bot.sql_helper.sql_xserver import (xacc_get, xacc_get_any, xacc_all, xacc_update,
                                         xacc_delete, xacc_grant, xquota_get,
                                         xquota_set_total, xquota_give, xcode_add,
-                                        xcode_unused_of, xcode_list, xquota_pool_used,
+                                        xcode_unused_of, xcode_list, xcode_days_of, xquota_pool_used,
                                         xquota_pool_total, POOL_MAIN, POOL_OPEN)
 from bot.modules.panel.xserver_panel import _enc, _dec, _xc_of
 
@@ -476,59 +476,82 @@ async def xs_cmd_renew_code(_, msg):
 @bot.on_callback_query(filters.regex('^xsa:cl:') & admins_on_filter)
 async def xs_admin_code_list(_, call):
     try:
-        _, _, sid_hex, kind, status, page_s = call.data.split(':')
+        parts = call.data.split(':')
+        if len(parts) == 6:
+            parts.append('all')  # 兼容已发送的旧面板按钮
+        _, _, sid_hex, kind, status, page_s, days_s = parts
         page = int(page_s)
+        days = None if days_s == 'all' else int(days_s)
+        if days is not None and days < 0:
+            raise ValueError
+        sid = _dec(sid_hex)
     except ValueError:
         return await callAnswer(call, '⚠️ 注册码查询条件无效', True)
-    if kind not in ('reg', 'renew') or status not in ('unused', 'used'):
+    if kind not in ('reg', 'renew') or status not in ('unused', 'used', 'all'):
         return await callAnswer(call, '⚠️ 注册码查询条件无效', True)
-    sid = _dec(sid_hex)
     xc = await _xc_any(sid)
     if xc is None:
         return await callAnswer(call, '⚠️ 服务器不存在', True)
 
-    is_used = status == 'used'
+    is_used = None if status == 'all' else status == 'used'
     per = 10
-    rows, total = xcode_list(sid, kind, is_used, page, per)
+    rows, total = xcode_list(sid, kind, is_used, page, per, days=days)
     total_page = max(1, -(-total // per))
     valid_page = min(max(page, 0), total_page - 1)
     if valid_page != page:
         page = valid_page
-        rows, total = xcode_list(sid, kind, is_used, page, per)
+        rows, total = xcode_list(sid, kind, is_used, page, per, days=days)
 
     kind_label = '开号码' if kind == 'reg' else '续期码'
-    status_label = '已使用' if is_used else '未使用'
+    status_label = {'used': '已使用', 'unused': '未使用', 'all': '全部'}[status]
+    days_label = '全部天数' if days is None else f'{days} 天'
     lines = [f'**▎🎫 {xc.name} · {kind_label}**',
-             f'· 状态 | {status_label} · 共 {total} 张 · 第 {page + 1}/{total_page} 页\n']
+             f'· 状态 | {status_label} · 有效期 | {days_label}',
+             f'· 共 {total} 张 · 第 {page + 1}/{total_page} 页\n']
     if not rows:
         lines.append('（暂无符合条件的注册码）')
+    last_days = None
     for index, row in enumerate(rows, start=page * per + 1):
-        detail = f'{int(row.us or 0)} 天'
-        if is_used:
+        row_days = int(row.us or 0)
+        if days is None and row_days != last_days:
+            lines.append(f'**{row_days} 天**')
+            last_days = row_days
+        line = f'{index}. `{row.code}`'
+        if status == 'all':
+            line += ' · 已使用' if row.used is not None else ' · 未使用'
+        lines.append(line)
+        if row.used is not None:
             used_at = row.usedtime.strftime('%Y-%m-%d %H:%M') if row.usedtime else '-'
-            detail += f' · [{row.used}](tg://user?id={row.used}) · {used_at}'
-        lines.append(f'{index}. `{row.code}`\n   {detail}')
+            lines.append(f'   [{row.used}](tg://user?id={row.used}) · {used_at}')
 
     kb = [
         [(f'{"✅ " if kind == "reg" else ""}开号码',
-          f'xsa:cl:{sid_hex}:reg:{status}:0'),
+          f'xsa:cl:{sid_hex}:reg:{status}:0:{days_s}'),
          (f'{"✅ " if kind == "renew" else ""}续期码',
-          f'xsa:cl:{sid_hex}:renew:{status}:0')],
-        [(f'{"✅ " if status == "unused" else ""}未使用',
-          f'xsa:cl:{sid_hex}:{kind}:unused:0'),
-         (f'{"✅ " if status == "used" else ""}已使用',
-          f'xsa:cl:{sid_hex}:{kind}:used:0')],
+          f'xsa:cl:{sid_hex}:renew:{status}:0:{days_s}')],
+        [(f'{"✅ " if status == value else ""}{label}',
+          f'xsa:cl:{sid_hex}:{kind}:{value}:0:{days_s}')
+         for value, label in [('all', '全部'), ('unused', '未使用'), ('used', '已使用')]],
     ]
+    day_options = xcode_days_of(sid, kind, is_used)
+    if days is not None and days not in day_options:
+        day_options = sorted(day_options + [days])
+    day_buttons = [(f'{"✅ " if days is None else ""}全部天数',
+                    f'xsa:cl:{sid_hex}:{kind}:{status}:0:all')]
+    day_buttons.extend((f'{"✅ " if days == value else ""}{value} 天',
+                        f'xsa:cl:{sid_hex}:{kind}:{status}:0:{value}')
+                       for value in day_options)
+    kb.extend(day_buttons[i:i + 4] for i in range(0, len(day_buttons), 4))
     nav = []
     if page > 0:
-        nav.append(('⬅️', f'xsa:cl:{sid_hex}:{kind}:{status}:{page - 1}'))
+        nav.append(('⬅️', f'xsa:cl:{sid_hex}:{kind}:{status}:{page - 1}:{days_s}'))
     if page < total_page - 1:
-        nav.append(('➡️', f'xsa:cl:{sid_hex}:{kind}:{status}:{page + 1}'))
+        nav.append(('➡️', f'xsa:cl:{sid_hex}:{kind}:{status}:{page + 1}:{days_s}'))
     if nav:
         kb.append(nav)
     kb.append([('➕ 生成开号码', f'xsa:cr:{sid_hex}'),
                ('🔙 主页', f'xsa:h:{sid_hex}')])
-    await callAnswer(call, f'🎫 {kind_label} · {status_label}')
+    await callAnswer(call, f'🎫 {kind_label} · {status_label} · {days_label}')
     await editMessage(call, '\n'.join(lines), buttons=ikb(kb))
 
 

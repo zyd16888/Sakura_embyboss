@@ -630,6 +630,24 @@ class CodeTests(unittest.TestCase):
         self.assertEqual((renew_total, [row.code for row in renew]),
                          (1, ["T-test-XRNV_only"]))
 
+    def test_code_list_filters_days_before_counting_and_paging(self):
+        setup_server()
+        weekly = [f"T-test-XREG_week_{i:02d}" for i in range(12)]
+        sx.xcode_add(weekly, "test", 1, 7, "reg")
+        sx.xcode_add(["T-test-XREG_month"], "test", 1, 30, "reg")
+        sx.xcode_add(["T-test-XRNV_other_kind"], "test", 1, 90, "renew")
+        sx.xcode_add(["T-other-XREG_other_server"], "other", 1, 180, "reg")
+        sx.xcode_redeem(weekly[0], 7001)
+
+        rows, total = sx.xcode_list("test", "reg", False, 1, 10, days=7)
+        self.assertEqual((total, len(rows)), (11, 1))
+        self.assertTrue(all(row.us == 7 and row.used is None for row in rows))
+        self.assertEqual(sx.xcode_days_of("test", "reg", False), [7, 30])
+        self.assertEqual(sx.xcode_days_of("test", "reg", True), [7])
+        self.assertEqual(sx.xcode_list("test", "reg", None, days=7)[1], 12)
+        self.assertEqual(sx.xcode_list("test", "reg", None)[1], 13)
+        self.assertEqual(sx.xcode_list("test", "reg", False, days=90), ([], 0))
+
     def test_reg_code_is_limited_to_one_per_user_and_server(self):
         setup_server()
         add_main(668, name="single-reg", embyid=None, lv="d")
@@ -767,7 +785,7 @@ class AdminPanelEntryTests(unittest.TestCase):
         self.assertIn(codes[0], unused_view[1])
         self.assertNotIn(codes[1], unused_view[1])
         buttons = [button for row in unused_view[2] for button in row]
-        self.assertIn(("已使用", f"xsa:cl:{sid_hex}:reg:used:0"), buttons)
+        self.assertIn(("已使用", f"xsa:cl:{sid_hex}:reg:used:0:all"), buttons)
         self.assertIn(("➕ 生成开号码", f"xsa:cr:{sid_hex}"), buttons)
 
         captured.clear()
@@ -778,6 +796,52 @@ class AdminPanelEntryTests(unittest.TestCase):
         self.assertIn(codes[1], used_view[1])
         self.assertNotIn(codes[0], used_view[1])
         self.assertIn("tg://user?id=8001", used_view[1])
+
+    def test_code_manager_groups_days_and_preserves_filter_on_navigation(self):
+        setup_server()
+        weekly = [f"T-test-XREG_week_{i:02d}" for i in range(12)]
+        sx.xcode_add(weekly, "test", 1, 7, "reg")
+        sx.xcode_add(["T-test-XREG_month"], "test", 1, 30, "reg")
+        sx.xcode_redeem(weekly[0], 8001)
+        sid_hex = xp._enc("test")
+
+        # 旧按钮默认全部天数，每个天数组只显示一次标题。
+        run(xa.xs_admin_code_list(None, FakeCall(1, f"xsa:cl:{sid_hex}:reg:unused:0")))
+        view = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("全部天数", view[1])
+        self.assertEqual(view[1].count("**7 天**"), 1)
+        self.assertNotIn("\n   7 天", view[1])
+        buttons = [button for row in view[2] for button in row]
+        self.assertIn(("30 天", f"xsa:cl:{sid_hex}:reg:unused:0:30"), buttons)
+
+        run(xa.xs_admin_code_list(None, FakeCall(1, f"xsa:cl:{sid_hex}:reg:unused:0:7")))
+        view = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("有效期 | 7 天", view[1])
+        self.assertIn("共 11 张", view[1])
+        self.assertNotIn("**7 天**", view[1])
+        self.assertNotIn("XREG_month", view[1])
+        buttons = [button for row in view[2] for button in row]
+        self.assertIn(("➡️", f"xsa:cl:{sid_hex}:reg:unused:1:7"), buttons)
+        self.assertIn(("已使用", f"xsa:cl:{sid_hex}:reg:used:0:7"), buttons)
+        self.assertIn(("续期码", f"xsa:cl:{sid_hex}:renew:unused:0:7"), buttons)
+        self.assertIn(("全部天数", f"xsa:cl:{sid_hex}:reg:unused:0:all"), buttons)
+
+        run(xa.xs_admin_code_list(None, FakeCall(1, f"xsa:cl:{sid_hex}:reg:unused:1:7")))
+        view = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("第 2/2 页", view[1])
+        self.assertEqual(view[1].count("-XREG_"), 1)
+
+        run(xa.xs_admin_code_list(None, FakeCall(1, f"xsa:cl:{sid_hex}:reg:all:0:all")))
+        view = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("共 13 张", view[1])
+        self.assertIn("· 已使用", view[1])
+        self.assertIn("· 未使用", view[1])
+        self.assertIn("tg://user?id=8001", view[1])
+
+        run(xa.xs_admin_code_list(None, FakeCall(1, f"xsa:cl:{sid_hex}:reg:used:9:30")))
+        view = next(item for item in reversed(captured) if item[0] == "edit")
+        self.assertIn("共 0 张 · 第 1/1 页", view[1])
+        self.assertIn("暂无符合条件", view[1])
 
     def test_grant_command_replies_before_deleting_request(self):
         setup_server()
