@@ -250,7 +250,7 @@ async def uinfo_delete_cancel_cb(_, call):
 @bot.on_message(filters.command('userip', prefixes) & admins_on_filter)
 async def user_cha_ip(_, msg, name = None):
     if isinstance(msg, CallbackQuery):
-        user_id = msg.data.split('-')[1]
+        user_id = msg.data.split('-', 1)[1]
         msg = msg.message
     else:
         if msg.reply_to_message is None:
@@ -268,10 +268,14 @@ async def user_cha_ip(_, msg, name = None):
 
     e = sql_get_emby(user_id)
     if not e:
+        e = sql_get_emby2(user_id)
+    if not e:
         return await sendMessage(msg, f"数据库中未查询到 {user_id}，请手动确认")
 
     success, result = await emby.get_emby_userip(emby_id = e.embyid)
-    if not success or len(result) == 0:
+    if not success:
+        return await sendMessage(msg, '❌ 播放记录查询失败，请检查媒体服务连接或查看机器人日志')
+    if len(result) == 0:
         return await sendMessage(msg, 'TA好像没播放信息吖')
     else:
         device_count = 0

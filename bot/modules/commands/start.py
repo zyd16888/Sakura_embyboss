@@ -57,7 +57,7 @@ async def p_start(_, msg):
     try:
         u = msg.command[1].split('-')[0]
         if u == 'userip':
-            name = msg.command[1].split('-')[1]
+            name = msg.command[1].split('-', 1)[1]
             if judge_admins(msg.from_user.id):
                 return await user_cha_ip(_, msg, name)
             else:
