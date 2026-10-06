@@ -75,6 +75,9 @@ async def check_and_notify_person_update(item_data: dict):
         session = Session()
         try:
             for person in people_list:
+                # People 同时包含演员、导演等人员，仅演员触发此类通知。
+                if person.get("Type") != "Actor":
+                    continue
                 person_id = person.get("Id")
                 person_name = person.get("Name")
                 
@@ -205,4 +208,4 @@ async def handle_media_webhook(request: Request):
         return {
             "status": "error",
             "message": str(e)
-        } 
+        }
